@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dino preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9ec5d8; font-family: sans-serif; }
+  #ui { position: fixed; top: 8px; left: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; z-index: 2; }
+  button { padding: 6px 12px; border: 0; border-radius: 4px; cursor: pointer; background: #fff; }
+  button.on { background: #2d7a3a; color: #fff; }
+  label, #info { background: rgba(255,255,255,.8); padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="ui"><span id="btns"></span><label>speed <input id="spd" type="range" min="0" max="1" step="0.05" value="0.6" /></label><span id="info"></span></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { SPECIES_IDS } from '@isle/shared';
+import { createDino } from './dino.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9ec5d8);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(0, 14, 34);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3, 0);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(15, 30, 20); sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30 });
+scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x6b8f4e, flatShading: true }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+// Lưới 2x2; xoay -90° quanh Y để mũi (-Z) hướng +X, nhìn từ camera thấy bên hông
+const spots = [[-9, -8], [9, -8], [-9, 8], [9, 8]];
+const dinos = SPECIES_IDS.map((id, i) => {
+  const d = createDino(id);
+  d.group.rotation.y = -Math.PI / 2;
+  d.group.position.set(spots[i][0], 0, spots[i][1]);
+  scene.add(d.group);
+  return d;
+});
+let meshInfo = '';
+dinos.forEach((d, i) => { let n = 0; d.group.traverse((o) => { if (o.isMesh) n++; }); meshInfo += SPECIES_IDS[i] + ':' + n + ' '; });
+document.getElementById('info').textContent = 'mesh ' + meshInfo;
+
+let anim = new URLSearchParams(location.search).get('anim') || 'idle'; // ?anim=eat để chụp ảnh từng trạng thái
+const btns = document.getElementById('btns');
+for (const a of ['idle', 'walk', 'run', 'attack', 'eat', 'drink', 'sleep', 'dead']) {
+  const b = document.createElement('button');
+  b.textContent = a;
+  b.onclick = () => { anim = a; [...btns.children].forEach((c) => c.classList.toggle('on', c === b)); };
+  if (a === anim) b.classList.add('on');
+  btns.appendChild(b);
+}
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+});
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  const sp = +document.getElementById('spd').value;
+  for (const d of dinos) d.update(dt, anim, sp);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

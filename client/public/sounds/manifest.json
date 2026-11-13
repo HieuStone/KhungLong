@@ -1,0 +1,128 @@
+{
+  "_help": "Khai báo âm thanh thật. Cấu trúc: tên âm -> loại -> danh sách (tên file, hoặc {file, start, end (giây), minSize, maxSize (mét)}). Không có thì dùng âm tổng hợp. Xem README.md.",
+  "roar": {
+    "carnivore": [
+      {
+        "file": "monster_04.ogg",
+        "minSize": 7
+      },
+      {
+        "file": "monster_07.ogg",
+        "minSize": 4
+      },
+      {
+        "file": "monster_roar_deep.wav",
+        "minSize": 8,
+        "end": 3.2
+      },
+      {
+        "file": "trex_calls.mp3",
+        "start": 4.5,
+        "end": 7.5,
+        "minSize": 8
+      },
+      {
+        "file": "trex_calls.mp3",
+        "start": 10.75,
+        "end": 13.75,
+        "minSize": 8
+      },
+      {
+        "file": "trex_calls.mp3",
+        "start": 0.3,
+        "end": 1.45,
+        "minSize": 3,
+        "maxSize": 9
+      },
+      {
+        "file": "roar_02.ogg",
+        "minSize": 4
+      },
+      {
+        "file": "monster_06.ogg",
+        "maxSize": 8
+      },
+      {
+        "file": "roar_01.ogg",
+        "maxSize": 5
+      },
+      {
+        "file": "grunt_01.ogg",
+        "maxSize": 5
+      },
+      {
+        "file": "grunt_02.ogg",
+        "maxSize": 4
+      },
+      {
+        "file": "grunt_03.ogg",
+        "maxSize": 5
+      }
+    ],
+    "herbivore": [
+      {
+        "file": "troll_01.ogg",
+        "minSize": 5
+      },
+      {
+        "file": "troll_02.ogg",
+        "minSize": 5
+      },
+      {
+        "file": "howl.ogg",
+        "minSize": 4
+      },
+      {
+        "file": "scream_02.ogg",
+        "minSize": 5
+      },
+      {
+        "file": "grunt_03.ogg",
+        "minSize": 5
+      },
+      {
+        "file": "grunt_04.ogg",
+        "maxSize": 5
+      },
+      {
+        "file": "grunt_05.ogg",
+        "maxSize": 5
+      },
+      {
+        "file": "troll_03.ogg",
+        "maxSize": 6
+      },
+      {
+        "file": "barking_01.ogg",
+        "maxSize": 4
+      }
+    ],
+    "pterosaur": [
+      {
+        "file": "scream_01.ogg"
+      },
+      {
+        "file": "alien_03.ogg"
+      },
+      {
+        "file": "alien_02.ogg"
+      },
+      {
+        "file": "hurt_02.ogg"
+      }
+    ]
+  },
+  "hurt": {
+    "dino": [
+      {
+        "file": "hurt_01.ogg"
+      },
+      {
+        "file": "hurt_04.ogg"
+      },
+      {
+        "file": "hurt_05.ogg"
+      }
+    ]
+  }
+}

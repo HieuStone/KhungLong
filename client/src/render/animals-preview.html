@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Animals preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9ec5d8; font-family: sans-serif; }
+  #ui { position: fixed; top: 8px; left: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; z-index: 2; }
+  button { padding: 6px 12px; border: 0; border-radius: 4px; cursor: pointer; background: #fff; }
+  button.on { background: #2d7a3a; color: #fff; }
+  label, #info { background: rgba(255,255,255,.8); padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="ui"><span id="btns"></span><label>speed <input id="spd" type="range" min="0" max="1" step="0.05" value="0.6" /></label><span id="info"></span></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { NPC_KINDS, NPC_IDS } from '@isle/shared';
+import { createAnimal } from './animals.js';
+
+// Tham số URL: ?anim=run&speed=0.8&t=2.5 (t: mô phỏng trước t giây rồi đứng hình, để chụp ảnh) &cam=front|top
+const Q = new URLSearchParams(location.search);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9ec5d8);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 500);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.3, 0);
+camera.position.set(0, 3.5, 15);
+if (Q.get('cam') === 'front') camera.position.set(14, 3.5, 4);
+if (Q.get('cam') === 'top') camera.position.set(0, 16, 6);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(8, 15, 10); sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 15, bottom: -15 });
+scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x6b8f4e, flatShading: true }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+// Mỗi con được phóng to về ~3.2 đơn vị dài để dễ nhìn; xoay -90° quanh Y để mũi (-Z) hướng +X (thấy bên hông)
+const items = NPC_IDS.map((id, i) => {
+  const a = createAnimal(id);
+  const holder = new THREE.Group();
+  holder.scale.setScalar(3.2 / NPC_KINDS[id].bodyLength);
+  a.group.rotation.y = -Math.PI / 2;
+  holder.add(a.group);
+  holder.position.set((i - 1.5) * 4.6, 0, 0);
+  a.group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  scene.add(holder);
+  return { id, a, holder };
+});
+document.getElementById('info').textContent = items.map(({ id, a }) => { let n = 0; a.group.traverse((o) => { if (o.isMesh) n++; }); return id + ':' + n; }).join(' ');
+
+let anim = Q.get('anim') || 'idle';
+const btns = document.getElementById('btns');
+for (const name of ['idle', 'walk', 'run', 'fly', 'dead']) {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.onclick = () => { anim = name; [...btns.children].forEach((c) => c.classList.toggle('on', c === b)); };
+  if (name === anim) b.classList.add('on');
+  btns.appendChild(b);
+}
+if (Q.get('speed')) document.getElementById('spd').value = Q.get('speed');
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+});
+
+let bad = 0;
+function step(dt) {
+  const sp = +document.getElementById('spd').value;
+  for (const it of items) {
+    it.a.update(dt, anim, sp);
+    // người gọi tự đặt độ cao: chim bay thì nâng lên
+    it.holder.position.y = anim === 'fly' && NPC_KINDS[it.id].flies ? 2.2 : 0;
+    it.a.group.traverse((o) => { if (o.isMesh && !(o.position.x === o.position.x && o.rotation.x === o.rotation.x)) bad++; });
+  }
+  if (bad) console.log('NaN phát hiện', bad);
+}
+const T = parseFloat(Q.get('t'));
+const frozen = !isNaN(T);
+if (frozen) for (let i = 0; i < T * 60; i++) step(1 / 60);
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (!frozen) step(dt);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

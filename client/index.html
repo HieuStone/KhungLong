@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Isle Lite</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
+    #menu { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; background: #111c; color: #fff; z-index: 10; overflow-y: auto; padding: 12px; box-sizing: border-box; }
+    #menu.hidden { display: none; }
+    #menu h1 { margin: 0 0 4px; }
+    #preview { width: 340px; height: 210px; max-width: 90vw; border-radius: 12px; background: radial-gradient(circle at 50% 35%, #3b5a3a, #152215); box-shadow: inset 0 0 0 1px #fff2; }
+    .colors { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+    #swatches { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 340px; }
+    .sw { width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff4; cursor: pointer; padding: 0; }
+    .sw.on { border-color: #fff; box-shadow: 0 0 0 2px #fff6; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; font-size: 14px; }
+    .row label { display: flex; gap: 6px; align-items: center; }
+    input[type=color] { width: 38px; height: 28px; padding: 0; border: 1px solid #fff5; border-radius: 6px; background: none; cursor: pointer; }
+    #menu button, #menu select, #menu input[type=text], #menu input:not([type]) { font-size: 15px; padding: 6px 12px; }
+    #note { color: #ffb4a8; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <div id="menu">
+    <h1>Isle Lite</h1>
+    <input id="name" placeholder="Tên" maxlength="16" />
+    <select id="species"></select>
+    <canvas id="preview" width="680" height="420"></canvas>
+    <div class="colors">
+      <div id="swatches" title="Chọn nhanh màu thân"></div>
+      <div class="row">
+        <label>Màu thân <input type="color" id="colBody" /></label>
+        <label>Điểm nhấn <input type="color" id="colAccent" /></label>
+      </div>
+      <div class="row">
+        <button id="colDefault" type="button">Màu mặc định</button>
+        <button id="colRandom" type="button">Ngẫu nhiên</button>
+      </div>
+    </div>
+    <button id="play">Vào game</button>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

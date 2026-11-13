@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pterosaur preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9ec5d8; font-family: sans-serif; }
+  #ui { position: fixed; top: 8px; left: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; z-index: 2; }
+  button { padding: 6px 12px; border: 0; border-radius: 4px; cursor: pointer; background: #fff; }
+  button.on { background: #2d7a3a; color: #fff; }
+  label, #info { background: rgba(255,255,255,.8); padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="ui"><span id="btns"></span><label>speed <input id="spd" type="range" min="0" max="1" step="0.05" value="0.6" /></label><span id="info"></span></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { createPterosaur } from './pterosaur.js';
+
+// ?anim=fly&t=1.2&cam=front|side|top|back&speed=0.6  (t = mô phỏng trước t giây rồi đứng hình)
+const q = new URLSearchParams(location.search);
+const ANIMS = ['idle', 'walk', 'run', 'fly', 'glide', 'attack', 'eat', 'drink', 'sleep', 'dead'];
+let anim = q.get('anim') || 'idle';
+const tFreeze = q.has('t') ? +q.get('t') : null;
+if (q.has('speed')) document.getElementById('spd').value = q.get('speed');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9ec5d8);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(15, 30, 20); sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 15, bottom: -15 });
+scene.add(sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x6b8f4e, flatShading: true }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+scene.add(new THREE.GridHelper(40, 40, 0x335533, 0x4d7a45));
+
+const ptero = createPterosaur('pteranodon');
+scene.add(ptero.group);
+let n = 0; ptero.group.traverse((o) => { if (o.isMesh) n++; });
+document.getElementById('info').textContent = 'mesh ' + n;
+
+// Bay/lướt: nhấc cả nhóm lên cho dễ xem (người gọi thật tự đặt độ cao)
+const airborne = () => (anim === 'fly' || anim === 'glide');
+const target = new THREE.Vector3();
+function setCam() {
+  const cam = q.get('cam') || '';
+  const cy = airborne() ? 3.5 : 1.8;
+  target.set(0, cy, 0);
+  const d = airborne() ? 11 : 8;
+  const p = { front: [0, cy + 1, -d], back: [0, cy + 1, d], side: [d, cy, 0], top: [0, cy + d, 0.01] }[cam] || [8, cy + 4, -10];
+  camera.position.set(...p);
+  controls.target.copy(target);
+  controls.update();
+}
+
+const btns = document.getElementById('btns');
+for (const a of ANIMS) {
+  const b = document.createElement('button');
+  b.textContent = a;
+  b.onclick = () => { anim = a; [...btns.children].forEach((c) => c.classList.toggle('on', c === b)); };
+  if (a === anim) b.classList.add('on');
+  btns.appendChild(b);
+}
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+});
+
+const spd = () => +document.getElementById('spd').value;
+function step(dt) {
+  const y = airborne() ? 3.5 : 0;
+  ptero.group.position.y = y;
+  ptero.update(dt, anim, spd());
+}
+setCam();
+if (tFreeze !== null) {
+  for (let i = 0; i < Math.round(tFreeze * 60); i++) step(1 / 60);
+  step(0);
+  renderer.render(scene, camera);
+  renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+} else {
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(() => {
+    step(clock.getDelta());
+    controls.update();
+    renderer.render(scene, camera);
+  });
+}
+</script>
+</body>
+</html>

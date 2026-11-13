@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Audio preview</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #15181c; color: #ddd; margin: 16px; }
+  h2 { margin: 16px 0 6px; font-size: 15px; color: #9cf; }
+  button { margin: 2px; padding: 6px 10px; background: #2b3138; color: #eee; border: 1px solid #456; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #3a4550; }
+  label { display: inline-block; min-width: 260px; margin: 4px 12px 4px 0; }
+  input[type=range] { width: 160px; vertical-align: middle; }
+  #log { color: #8a8; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Âm thanh tổng hợp – nghe thử</h1>
+<div>
+  <button id="resume">Resume (bấm trước)</button>
+  <button id="mute">Mute</button>
+  <label>Master <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8"></label>
+  <label>Vị trí nguồn X (m) <input id="sx" type="range" min="-100" max="100" step="1" value="0"><span id="sxv">0</span></label>
+  <label>Khoảng cách Z (m) <input id="sz" type="range" min="-150" max="150" step="1" value="-10"><span id="szv">-10</span></label>
+  <label><input id="spatial" type="checkbox"> Định vị 3D (dùng X/Z ở trên, người nghe ở gốc nhìn về -Z)</label>
+</div>
+<h2>Môi trường (update mỗi 100 ms)</h2>
+<div id="env"></div>
+<label><input id="uw" type="checkbox"> underwater</label>
+<h2>Âm sự kiện</h2>
+<div id="grid"></div>
+<div id="log"></div>
+<script type="module">
+import { createAudio } from './audio.js';
+const audio = createAudio();
+window.audio = audio;
+const $ = (id) => document.getElementById(id);
+const log = (s) => { $('log').textContent = s; };
+
+$('resume').onclick = () => { audio.resume(); log('ctx: ' + (audio.ctx && audio.ctx.state)); };
+$('mute').onclick = () => { $('mute').textContent = audio.toggleMute() ? 'Unmute' : 'Mute'; };
+$('vol').oninput = (e) => audio.setMasterVolume(+e.target.value);
+$('sx').oninput = (e) => { $('sxv').textContent = e.target.value; };
+$('sz').oninput = (e) => { $('szv').textContent = e.target.value; };
+
+const env = { waterProx: 0, forest: 0, wind: 0.2, altitude: 0, speed: 0 };
+const ranges = { waterProx: [0, 1, 0.01], forest: [0, 1, 0.01], wind: [0, 1, 0.01], altitude: [0, 300, 1], speed: [0, 1, 0.01] };
+for (const k of Object.keys(env)) {
+  const [mn, mx, st] = ranges[k];
+  const l = document.createElement('label');
+  l.innerHTML = `${k} <input type="range" min="${mn}" max="${mx}" step="${st}" value="${env[k]}"> <span>${env[k]}</span>`;
+  l.querySelector('input').oninput = (e) => { env[k] = +e.target.value; l.querySelector('span').textContent = e.target.value; };
+  $('env').appendChild(l);
+}
+audio.setListener({ x: 0, y: 0, z: 0 }, 0);
+setInterval(() => audio.update(0.1, { ...env, underwater: $('uw').checked }), 100);
+
+const V = [
+  ['step', { size: 0.5 }, 'step nhỏ 0.5m'], ['step', { size: 3 }, 'step 3m'], ['step', { size: 12 }, 'step T-rex 12m'],
+  ['step', { size: 3, surface: 'sand' }, 'step cát'], ['step', { size: 3, surface: 'rock' }, 'step đá'],
+  ['step', { size: 3, surface: 'water' }, 'step nước'], ['step', { size: 3, surface: 'wood' }, 'step cầu gỗ'],
+  ['bite', { size: 3 }], ['miss'], ['chew'], ['crunch'], ['gulp'], ['slurp'],
+  ['roar', { size: 12, kind: 'carnivore' }, 'roar T-rex'], ['roar', { size: 3, kind: 'carnivore' }, 'roar carnivore 3m'],
+  ['roar', { size: 1, kind: 'carnivore' }, 'roar carnivore nhỏ'], ['roar', { size: 8, kind: 'herbivore' }, 'roar herbivore 8m'],
+  ['roar', { size: 2, kind: 'herbivore' }, 'roar herbivore 2m'], ['roar', { size: 3, kind: 'pterosaur' }, 'roar pterosaur'],
+  ['flap', { size: 1 }, 'flap nhỏ'], ['flap', { size: 6 }, 'flap lớn'], ['wing_whoosh', { size: 6 }],
+  ['hurt', { kind: 'dino', size: 3 }, 'hurt dino 3m'], ['hurt', { kind: 'dino', size: 12 }, 'hurt dino 12m'],
+  ['hurt', { kind: 'chicken' }, 'hurt chicken'], ['hurt', { kind: 'rabbit' }, 'hurt rabbit'],
+  ['hurt', { kind: 'mouse' }, 'hurt mouse'], ['hurt', { kind: 'bird' }, 'hurt bird'],
+  ['die', { kind: 'dino', size: 8 }, 'die dino'], ['die', { kind: 'chicken' }, 'die chicken'], ['die', { kind: 'mouse' }, 'die mouse'],
+  ['splash', { size: 2 }, 'splash nhỏ'], ['splash', { size: 10 }, 'splash lớn'],
+  ['thud', { size: 2 }, 'thud nhỏ'], ['thud', { size: 12 }, 'thud lớn'],
+  ['cluck'], ['squeak'], ['peep'], ['rabbit_thump'], ['bird_song'],
+  ['ui_click'], ['notice'], ['eat_done'], ['level_up'],
+];
+for (const [name, opts = {}, label] of V) {
+  const b = document.createElement('button');
+  b.textContent = label || name;
+  b.onclick = () => {
+    audio.resume();
+    const o = { ...opts };
+    if ($('spatial').checked) { o.x = +$('sx').value; o.z = +$('sz').value; o.y = 0; }
+    audio.play(name, o);
+  };
+  $('grid').appendChild(b);
+}
+</script>
+</body>
+</html>
