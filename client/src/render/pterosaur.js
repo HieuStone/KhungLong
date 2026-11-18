@@ -2,6 +2,8 @@
 // Quy ước: mũi hướng -Z, chân đặt y=0, đơn vị mét, chiều dài mũi->đuôi (không tính mào) = SPECIES[id].bodyLength.
 // Cánh = xương (cánh tay -> cẳng tay -> ngón bay) + màng da là BufferGeometry cập nhật mỗi frame từ vị trí các khớp.
 import * as THREE from 'three';
+import { skinify } from './textures.js';
+import { LoftBuilder, SkinMaterial } from './loft.js';
 import { SPECIES } from '@isle/shared';
 import { recolor, bellyOf } from './colorize.js';
 
@@ -16,24 +18,51 @@ const CONE = new THREE.ConeGeometry(1, 1, 6).translate(0, 0.5, 0); // đáy ở 
 // xương: trục +X dài 1, gốc dày bán kính 1, đầu mảnh dần
 const BONE = new THREE.CylinderGeometry(0.3, 1, 1, 6, 1).rotateZ(-PI / 2).translate(0.5, 0, 0);
 
+/** Vân màng cánh: sợi gia cường (actinofibril) chạy chéo từ mép trước ra mép sau, mạch máu mảnh, mép trước sẫm. */
+let membraneTex = null;
+function membraneTexture() {
+  if (membraneTex) return membraneTex;
+  const S = 512, c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, S); // v = 0 mép trước (sẫm, dày) -> 1 mép sau (mỏng, sáng)
+  g.addColorStop(0, '#9a9088'); g.addColorStop(0.18, '#ddd6cc'); g.addColorStop(1, '#f4efe8');
+  x.fillStyle = g; x.fillRect(0, 0, S, S);
+  let seed = 5; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  x.globalAlpha = 0.13; x.strokeStyle = '#5a4a3e'; x.lineWidth = 1.2;
+  for (let i = 0; i < 160; i++) { const u = rnd() * S * 1.3 - S * 0.15; x.beginPath(); x.moveTo(u, 0); x.lineTo(u + S * 0.35, S); x.stroke(); }
+  x.globalAlpha = 0.22; x.strokeStyle = '#6e2f28'; x.lineWidth = 1.6;
+  for (let i = 0; i < 9; i++) { // mạch máu chia nhánh
+    let px = rnd() * S, py = rnd() * S * 0.3; x.beginPath(); x.moveTo(px, py);
+    for (let k = 0; k < 12; k++) { px += (rnd() - 0.3) * 30; py += 20 + rnd() * 25; x.lineTo(px, py); }
+    x.stroke();
+  }
+  x.globalAlpha = 1;
+  membraneTex = new THREE.CanvasTexture(c); membraneTex.colorSpace = THREE.SRGBColorSpace; membraneTex.anisotropy = 4;
+  return membraneTex;
+}
+
 // Vật liệu dùng chung (không dispose)
 let MATS = null;
 function getMats() {
   if (!MATS) {
-    const m = (c, r = 0.9, extra = {}) => new THREE.MeshStandardMaterial({ color: c, flatShading: true, roughness: r, ...extra });
+    const m = (c, r = 0.9, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: r, ...extra });
     MATS = {
-      back: m(0x6f8796), belly: m(0xc9d4d0), crest: m(0xe0612a), beak: m(0xe8d28a, 0.6),
-      bone: m(0x6b4a32, 0.7), dark: m(0x101010, 0.3),
-      // màng cánh: mặt lưng (FrontSide) sẫm, mặt bụng (BackSide) sáng cam nhạt
-      dorsal: m(0xa68c72, 0.95, { side: THREE.FrontSide }),
-      ventral: m(0xe8b98a, 0.95, { side: THREE.BackSide }),
+      back: skinify(m(0x5b544c, 1), 0.5), belly: skinify(m(0xd6d0c2, 1), 0.3), crest: m(0xa8442a, 0.5), beak: m(0xcdbb94, 0.4),
+      bone: m(0x4e4038, 0.7), dark: m(0x101010, 0.15),
+      // màng cánh: da mỏng có vân sợi; mặt lưng (FrontSide) nâu sẫm, mặt bụng (BackSide) nhạt hơn và hơi sáng khi nắng xuyên qua
+      dorsal: m(0x6a5444, 0.85, { side: THREE.FrontSide, map: membraneTexture() }),
+      ventral: m(0xb39478, 0.85, { side: THREE.BackSide, map: membraneTexture(), emissive: 0x2a1a10 }),
     };
   }
   return MATS;
 }
 
 // ---------- Kích thước (mét, sẽ co đều về bodyLength) ----------
-const W = { arm: 0.72, fore: 0.9, fing: 1.6 };            // chiều dài các đoạn cánh
+const W = { arm: 0.72, fore: 0.9, fing: 1.6 };
+// Tư thế cánh gập khi ở dưới đất: [shYaw, shZ, elYaw, elZ, wrYaw, wrZ]. Pterosaur đi bằng 4 chi:
+// cánh tay chống xuống, cẳng tay vươn ra trước, khớp cổ tay chạm đất làm "chân trước", ngón cánh gập ngược ra sau.
+const FOLD = [0.35, -1.15, -1.2, -0.5, 2.7, 0.2];
+const MS = 12, MC = 5; // độ mịn lưới màng cánh (dọc sải x ngang dây cung)            // chiều dài các đoạn cánh
 const LEG = { t: 0.45, s: 0.45, f: 0.16, hipY: -0.22 };   // đùi, cẳng, bàn; độ thấp của hông so với tâm thân
 const NECK = { n: 4, len: 0.28 };
 const NECK_ANG = {
@@ -64,24 +93,12 @@ function bone(parent, mat, len, r, s) {
   m.scale.set(len, r, r); if (s < 0) m.rotation.y = PI;
   parent.add(m); return m;
 }
-// trụ thuôn dọc -Y từ gốc (chi)
-function limb(parent, mat, own, len, rTop, rBot) {
-  const g = new THREE.CylinderGeometry(rTop, rBot, len, 6, 1).translate(0, -len / 2, 0);
-  own.push(g); const m = new THREE.Mesh(g, mat); parent.add(m); return m;
-}
-// trụ thuôn dọc ±Z từ gốc (đốt cổ/đuôi)
-function segMesh(parent, mat, own, len, rBase, rEnd, dirZ) {
-  const g = new THREE.CylinderGeometry(rEnd, rBase, len * 1.08, 7, 1).translate(0, len * 0.5, 0);
-  g.rotateX(dirZ > 0 ? PI / 2 : -PI / 2);
-  own.push(g); const m = new THREE.Mesh(g, mat); parent.add(m); return m;
-}
 // chuỗi đốt nối tiếp: pivot i đặt ở đầu đốt i-1
-function chain(parent, mat, own, C, dirZ) {
+function chain(parent, C, dirZ) {
   const segs = []; let p = parent;
   for (let i = 0; i < C.n; i++) {
     const piv = new THREE.Group();
     if (i === 0) piv.position.set(C.pos[0], C.pos[1], C.pos[2]); else piv.position.z = dirZ * C.len;
-    segMesh(piv, mat, own, C.len, lerp(C.r0, C.r1, i / C.n), lerp(C.r0, C.r1, (i + 1) / C.n), dirZ);
     p.add(piv); p = piv; segs.push(piv);
   }
   return segs;
@@ -89,13 +106,49 @@ function chain(parent, mat, own, C, dirZ) {
 
 function makeLeg(body, M, own, x) {
   const hip = new THREE.Group(); hip.position.set(x, LEG.hipY, 0.22); body.add(hip);
-  ell(hip, M.back, [0.1, LEG.t * 0.55, 0.1], [0, -LEG.t * 0.45, 0]); // đùi
   const knee = new THREE.Group(); knee.position.y = -LEG.t; hip.add(knee);
-  limb(knee, M.back, own, LEG.s, 0.05, 0.035); // cẳng
   const ankle = new THREE.Group(); ankle.position.y = -LEG.s; knee.add(ankle);
-  limb(ankle, M.bone, own, LEG.f - 0.03, 0.035, 0.03);
-  ell(ankle, M.bone, [0.07, 0.03, 0.15], [0, -LEG.f + 0.03, -0.07]); // bàn chân (đáy chạm y=-f)
   return { hip, knee, ankle, side: Math.sign(x) };
+}
+
+/** Da liền mạch cho Pteranodon: đuôi ngắn -> thân (gù vai cơ bay) -> cổ dài -> hộp sọ (mỏ, mào vẫn là khối riêng). */
+function buildPteroSkin(X, mat) {
+  const { torsoG, neck, head, tail, legs } = X;
+  const lb = new LoftBuilder();
+  const spine = [
+    { bone: tail[1], p: [0, 0, 0.24], w: 0.015, h: 0.02 },
+    { bone: tail[1], p: [0, 0, 0], w: 0.07, h: 0.08 },
+    { bone: tail[0], p: [0, 0, 0], w: 0.12, h: 0.13 },
+  ];
+  for (const k of [0.55, 0.25, -0.05, -0.35]) {
+    const f = Math.sqrt(1 - k * k);
+    spine.push({ bone: torsoG, p: [0, -0.03, 0.08 + k * 0.62], w: 0.29 * f, h: 0.3 * f });
+  }
+  spine.push({ bone: torsoG, p: [0, 0.05, -0.4], w: 0.2, h: 0.22 }); // gù vai
+  for (let i = 0; i < neck.length; i++) {
+    const r = lerp(0.15, 0.08, i / neck.length);
+    spine.push({ bone: neck[i], p: [0, 0, 0], w: r, h: r * 1.1 });
+  }
+  for (const z of [0.1, 0.0, -0.12, -0.22, -0.3]) {
+    const f = Math.sqrt(Math.max(0, 1 - ((z + 0.1) / 0.26) ** 2));
+    spine.push({ bone: head, p: [0, 0, z], w: Math.max(0.12 * f, 0.06), h: Math.max(0.125 * f, 0.055) });
+  }
+  const sst = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  lb.add(spine, { sub: 4, pattern: (s01, sa) => [sst(-0.15, -0.7, sa), 0, sst(0.55, 1, sa)] });
+  const fwd = new THREE.Vector3(0, 0, -1);
+  for (const l of legs) {
+    lb.add([
+      { bone: l.hip, p: [0, 0.04, 0], w: 0.06, h: 0.08 },
+      { bone: l.hip, p: [0, -LEG.t * 0.35, 0.01], w: 0.1, h: 0.12 },
+      { bone: l.knee, p: [0, 0, 0], w: 0.05, h: 0.055 },
+      { bone: l.knee, p: [0, -LEG.s * 0.5, 0], w: 0.04, h: 0.045 },
+      { bone: l.ankle, p: [0, 0, 0], w: 0.033, h: 0.035, acc: 0.6 },
+      { bone: l.ankle, p: [0, -LEG.f + 0.035, -0.02], w: 0.05, h: 0.028, acc: 1 },
+      { bone: l.ankle, p: [0, -LEG.f + 0.03, -0.14], w: 0.035, h: 0.018, acc: 1 },
+    ], { sub: 3, up: fwd, smooth: 1, scaleLen: 0.03 });
+  }
+  mat.skinUniforms.uScale.value = 0.6;
+  return lb.build(X.rig, mat);
 }
 
 export function createPterosaur(speciesId = 'pteranodon', colors = null) {
@@ -110,17 +163,13 @@ export function createPterosaur(speciesId = 'pteranodon', colors = null) {
 
   const body = new THREE.Group(); rig.add(body);
   const torsoG = new THREE.Group(); body.add(torsoG);
-  ell(torsoG, M.back, [0.3, 0.3, 0.62], [0, 0, 0.08]);
-  ell(torsoG, M.belly, [0.26, 0.24, 0.58], [0, -0.1, 0.08]);
-  ell(torsoG, M.back, [0.2, 0.2, 0.3], [0, 0.08, -0.38]); // gù vai (cơ bay)
 
   // Chân
   const legs = [-1, 1].map((sd) => makeLeg(body, M, own, sd * 0.17));
 
   // Cổ + đầu
-  const neck = chain(body, M.back, own, { n: NECK.n, len: NECK.len, r0: 0.16, r1: 0.085, pos: [0, 0.13, -0.5] }, -1);
+  const neck = chain(body, { n: NECK.n, len: NECK.len, r0: 0.16, r1: 0.085, pos: [0, 0.13, -0.5] }, -1);
   const head = new THREE.Group(); head.position.z = -NECK.len; neck[neck.length - 1].add(head);
-  ell(head, M.back, [0.12, 0.125, 0.26], [0, 0, -0.1]);                     // hộp sọ
   cone(head, M.beak, [0.085, 1.05, 0.05], [0, -0.01, -0.25], [-PI / 2, 0, 0]); // mỏ trên dài không răng
   const jaw = new THREE.Group(); jaw.position.set(0, -0.06, -0.18); head.add(jaw);
   cone(jaw, M.beak, [0.06, 0.92, 0.035], [0, 0, 0], [-PI / 2, 0, 0]);       // mỏ dưới
@@ -130,11 +179,11 @@ export function createPterosaur(speciesId = 'pteranodon', colors = null) {
     ell(head, M.crest, [0.04, 0.025, 0.07], [sd * 0.1, 0.085, -0.2]);        // gờ mày cam
   }
   const crest = new THREE.Group(); crest.position.set(0, 0.07, 0.0); head.add(crest); // mào xương hướng ra sau
-  cone(crest, M.crest, [0.028, 0.7, 0.1], [0, 0, 0], [PI / 2 - 0.5, 0, 0]);
+  cone(crest, M.crest, [0.026, 0.75, 0.11], [0, 0, 0], [PI / 2 - 0.12, 0, 0]); // mào xương dài ngả hẳn ra sau
   const noseTip = new THREE.Object3D(); noseTip.position.set(0, 0, -1.3); head.add(noseTip);
 
   // Đuôi ngắn
-  const tail = chain(body, M.back, own, { n: 2, len: 0.22, r0: 0.12, r1: 0.03, pos: [0, 0, 0.62] }, 1);
+  const tail = chain(body, { n: 2, len: 0.22, r0: 0.12, r1: 0.03, pos: [0, 0, 0.62] }, 1);
   const tailTip = new THREE.Object3D(); tailTip.position.z = 0.22; tail[tail.length - 1].add(tailTip);
 
   // Cánh
@@ -145,53 +194,80 @@ export function createPterosaur(speciesId = 'pteranodon', colors = null) {
     };
     const sh = new THREE.Group(); sh.position.set(s * 0.26, 0.14, -0.3); sh.rotation.order = 'YZX'; body.add(sh);
     bone(sh, M.bone, W.arm, 0.075, s);
-    ell(sh, M.back, [0.15, 0.13, 0.2], [s * 0.05, 0, 0]); // cơ vai
+    ell(sh, M.back, [0.09, 0.075, 0.13], [s * 0.03, 0, 0]); // cơ vai
     const el = mkJ(sh, s * W.arm); bone(el, M.bone, W.fore, 0.055, s);
     const wr = mkJ(el, s * W.fore); bone(wr, M.bone, W.fing, 0.042, s);
     ell(wr, M.bone, [0.07, 0.07, 0.07], [0, 0, 0]);       // khớp cổ tay
     cone(wr, M.bone, [0.025, 0.14, 0.025], [0, 0, -0.04], [-PI / 2, 0, 0]); // móng tay
     const tip = new THREE.Object3D(); tip.position.x = s * W.fing; wr.add(tip);
     // Màng da: S,E,W,T,H,P (P = điểm giữa mép sau, lõm vào). Mặt trên = FrontSide (dorsal), mặt dưới = BackSide (ventral)
+    // Màng: lưới (NS dọc sải) x (NC ngang dây cung) giữa mép trước (vai-khuỷu-cổ tay-chóp) và mép sau (hông-giữa-chóp)
     const g = new THREE.BufferGeometry();
-    const pos = new THREE.BufferAttribute(new Float32Array(6 * 3), 3); pos.setUsage(THREE.DynamicDrawUsage);
+    const pos = new THREE.BufferAttribute(new Float32Array((MS + 1) * (MC + 1) * 3), 3); pos.setUsage(THREE.DynamicDrawUsage);
     g.setAttribute('position', pos);
-    const tri = [0, 4, 1, 1, 4, 2, 2, 4, 5, 2, 5, 3]; // S,H,E | E,H,W | W,H,P | W,P,T (hướng lên cho cánh phải)
-    if (s < 0) for (let i = 0; i < tri.length; i += 3) { const t = tri[i + 1]; tri[i + 1] = tri[i + 2]; tri[i + 2] = t; }
+    const uv = [];
+    for (let i = 0; i <= MS; i++) for (let j = 0; j <= MC; j++) uv.push(i / MS * 2.5, j / MC);
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    const tri = [];
+    for (let i = 0; i < MS; i++) for (let j = 0; j < MC; j++) {
+      const a = i * (MC + 1) + j, b = a + MC + 1, c = a + 1, d = b + 1;
+      // mặt lưng (FrontSide) hướng lên cho cả hai cánh
+      if (s > 0) tri.push(a, c, b, c, d, b); else tri.push(a, b, c, c, b, d);
+    }
     g.setIndex(tri);
     own.push(g);
     for (const mat of [M.dorsal, M.ventral]) {
       const mm = new THREE.Mesh(g, mat); mm.frustumCulled = false; body.add(mm);
     }
-    return { s, sh, el, wr, tip, pos };
+    return { s, sh, el, wr, tip, pos, geo: g };
   });
 
   // Dùng chung geometry/material nên dispose chỉ giải phóng geometry riêng
-  group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
 
   // ---------- Cập nhật màng cánh theo vị trí khớp (không gian của body) ----------
   const _v = new THREE.Vector3(), _inv = new THREE.Matrix4();
   const _T = new THREE.Vector3(), _H = new THREE.Vector3(), _W = new THREE.Vector3(), _P = new THREE.Vector3();
+  const _S = new THREE.Vector3(), _E = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3();
+  // điểm trên đường gấp khúc pts tại tỉ lệ t (theo độ dài)
+  const along = (pts, t, out) => {
+    let L = 0; const seg = [];
+    for (let i = 1; i < pts.length; i++) { const d = pts[i].distanceTo(pts[i - 1]); seg.push(d); L += d; }
+    let x = t * L;
+    for (let i = 0; i < seg.length; i++) { if (x <= seg[i] || i === seg.length - 1) return out.lerpVectors(pts[i], pts[i + 1], Math.min(1, x / Math.max(seg[i], 1e-6))); x -= seg[i]; }
+    return out.copy(pts[pts.length - 1]);
+  };
   function updateMembranes() {
     body.updateMatrixWorld(true);
     _inv.copy(body.matrixWorld).invert();
+    const get = (o, out) => out.setFromMatrixPosition(o.matrixWorld).applyMatrix4(_inv);
     for (const w of wings) {
-      const set = (i, v) => w.pos.setXYZ(i, v.x, v.y - 0.01, v.z);
-      const get = (o, out) => out.setFromMatrixPosition(o.matrixWorld).applyMatrix4(_inv);
-      set(0, get(w.sh, _v));
-      set(1, get(w.el, _v));
-      get(w.wr, _W); set(2, _W);
-      get(w.tip, _T); set(3, _T);
-      _H.set(...H_PT(w.s)); set(4, _H);
-      // điểm giữa mép sau, kéo về phía cổ tay => mép sau lõm (giống màng thật)
-      _P.lerpVectors(_T, _H, 0.5).lerp(_W, 0.16); set(5, _P);
+      get(w.sh, _S); get(w.el, _E); get(w.wr, _W); get(w.tip, _T); _H.set(...H_PT(w.s));
+      // mép sau lõm vào về phía cổ tay (như màng thật)
+      _P.lerpVectors(_T, _H, 0.5).lerp(_W, 0.16);
+      const lead = [_S, _E, _W, _T], trail = [_H, _P, _T];
+      const span = _S.distanceTo(_T);
+      for (let i = 0; i <= MS; i++) {
+        const t = i / MS;
+        along(lead, t, _a); along(trail, t, _b);
+        const chord = _a.distanceTo(_b);
+        for (let j = 0; j <= MC; j++) {
+          const c = j / MC;
+          // võng nhẹ (màng căng giữa các xương), nhiều ở giữa dây cung, mỏng dần ra chóp
+          const sag = Math.sin(Math.PI * c) * chord * 0.07 * (1 - t * 0.6) + span * 0 ;
+          w.pos.setXYZ(i * (MC + 1) + j, _a.x + (_b.x - _a.x) * c, _a.y + (_b.y - _a.y) * c - 0.01 + sag * st.billow, _a.z + (_b.z - _a.z) * c);
+        }
+      }
       w.pos.needsUpdate = true;
+      w.geo.computeVertexNormals();
+      w.geo.computeBoundingSphere();
     }
   }
 
   // ---------- Trạng thái animation ----------
   const st = {
     t: 0, fl: 0, flap: 0, open: 0, move: 0, run: 0, sleep: 0, dead: 0, feed: 0, sip: 0,
-    phase: 0, fp: 0, br: 0, atkT: 0,
+    phase: 0, fp: 0, br: 0, atkT: 0, billow: -1,
   };
   const init = { ...st };
   const LEG_REST = { h: 0.5, k: -1.0 };
@@ -266,9 +342,10 @@ export function createPterosaur(speciesId = 'pteranodon', colors = null) {
     // ----- Cánh -----
     // Gập: cánh tay hướng ra sau, cẳng tay gập về trước, ngón bay gập ngược ra sau (zigzag sát hông)
     // Xoè: duỗi ngang, hơi xuôi ra sau; lướt thì vồng lên (dihedral)
-    const shYaw = lerp(1.3, 0.2, open), shZ = lerp(-0.2, 0.1, open) - 0.27 * dead;
-    const elYaw = lerp(-2.75, 0.12, open), elZ = lerp(0.5, 0.0, open);
-    const wrYaw = lerp(2.85, 0.3, open), wrZ = lerp(0.45, 0.04, open) + 0.04 * dead;
+    const F = FOLD;
+    const shYaw = lerp(F[0], 0.2, open), shZ = lerp(F[1], 0.1, open) - 0.27 * dead;
+    const elYaw = lerp(F[2], 0.12, open), elZ = lerp(F[3], 0.0, open);
+    const wrYaw = lerp(F[4], 0.3, open), wrZ = lerp(F[5], 0.04, open) + 0.04 * dead;
     const sF = Math.sin(st.fp), cF = Math.cos(st.fp);
     const rest = open * (1 - flap) * (isGlide ? 1 : 0);
     const flutter = Math.sin(st.t * 9) * 0.012 * rest;                 // lướt: rung rất nhẹ
@@ -318,9 +395,21 @@ export function createPterosaur(speciesId = 'pteranodon', colors = null) {
       tail[i].rotation.x = -0.05 + sleep * 0.15 + Math.sin(st.t * 0.8) * 0.02;
     }
 
+    // Màng cánh: bay thì phồng lên (lực nâng đẩy từ dưới), gập/đứng thì rủ xuống
+    st.billow = lerp(-0.6, 1, fl) + Math.sin(st.fp) * 0.35 * flap;
     // Chết: nằm sấp, đã hạ thân ở trên; rig lệch nhẹ cho cảm giác ngã nghiêng
     updateMembranes();
   }
+
+  // Lớp da liền mạch (thân, cổ, đầu, đuôi, chân) dựng ở tư thế gốc rồi bám xương
+  update(0, 'idle', 0);
+  group.updateMatrixWorld(true);
+  const skinMat = new SkinMaterial();
+  skinMat.skinUniforms.uBack.value.set(colors ? colors.body : 0x5b544c);
+  skinMat.skinUniforms.uBelly.value.set(colors ? bellyOf(colors.body) : 0xd6d0c2);
+  skinMat.skinUniforms.uAccent.value.set(0x5a3e2a); // bàn chân sừng nâu
+  const skin = buildPteroSkin({ rig, torsoG, neck, head, tail, legs }, skinMat);
+  own.push(skin.geometry);
 
   // Co giãn đều để chiều dài mũi->đuôi (không tính mào) đúng bodyLength. Đo ở tư thế lướt (cổ duỗi thẳng).
   Object.assign(st, { fl: 1, open: 1 });
@@ -339,7 +428,10 @@ export function createPterosaur(speciesId = 'pteranodon', colors = null) {
   const freeColors = colors ? recolor(group, [
     { from: M.back, color: colors.body }, { from: M.belly, color: bellyOf(colors.body) }, { from: M.crest, color: colors.accent },
   ]) : null;
-  function dispose() { for (const g of own) g.dispose(); own.length = 0; if (freeColors) freeColors(); }
+  function dispose() {
+    for (const g of own) g.dispose(); own.length = 0; if (freeColors) freeColors();
+    skinMat.dispose(); skin.skeleton.dispose();
+  }
 
   return { group, update, dispose };
 }

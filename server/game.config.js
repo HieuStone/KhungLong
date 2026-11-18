@@ -20,7 +20,7 @@ const DEFAULTS = {
 
     // Số lượng mỗi loài luôn được duy trì trên bản đồ (chết thì sau `respawnDelay` giây có con mới).
     // Loài: tyrannosaurus, utahraptor, triceratops, dryosaurus, pteranodon. Đặt 0 để không có loài đó.
-    counts: { tyrannosaurus: 4, utahraptor: 8, triceratops: 6, dryosaurus: 10, pteranodon: 10 },
+    counts: { tyrannosaurus: 6, utahraptor: 12, triceratops: 15, dryosaurus: 20, pteranodon: 20 },
 
     // Giai đoạn lớn khi xuất hiện: chọn ngẫu nhiên trong khoảng này.
     // Các mức theo thứ tự: 'hatchling' (con non) < 'juvenile' < 'subadult' < 'adult' (trưởng thành)
@@ -43,7 +43,7 @@ const DEFAULTS = {
   // ---------------------------------------------------------------------------------
   predation: {
     // Mức sẵn sàng săn từng loại mục tiêu, từ 0 (không bao giờ) đến 1 (luôn luôn khi đủ điều kiện).
-    huntPlayers: 0.5,   // săn NGƯỜI CHƠI
+    huntPlayers: 0,   // săn NGƯỜI CHƠI
     huntDinos: 0.6,     // săn khủng long NPC khác
     huntPrey: 1.0,      // săn con mồi nhỏ (gà, thỏ, chuột, chim)
 
@@ -95,6 +95,22 @@ const DEFAULTS = {
     canDrag: true,              // cho phép tha xác (phím G)
     carryInMouthMaxSizeRatio: 0.4,   // xác nhỏ hơn 40% thân mình thì NGẬM đi (nhẹ, gần như không chậm)
     maxDragMassRatio: 1.2,      // chỉ kéo được xác nặng tối đa 1.2 lần mình (khối lượng ~ kích thước^2)
+  },
+
+  // ---------------------------------------------------------------------------------
+  //  CON MỒI NPC (động vật nhỏ do server điều khiển). Chết thì sau ~20 giây con mới xuất hiện ở chỗ khác.
+  //  Thịt (khi ăn hết xác): chuột 6%, chim 10%, thằn lằn 12%, thỏ 22%, gà 28%, rùa 30%, lợn rừng 60% thanh đói.
+  // ---------------------------------------------------------------------------------
+  prey: {
+    counts: {
+      chicken: 30,   // gà
+      rabbit: 36,    // thỏ
+      mouse: 40,     // chuột (rất nhỏ, khó thấy)
+      bird: 34,      // chim (bay lên khi bị doạ)
+      lizard: 32,    // thằn lằn: nhanh, chạy ziczac
+      turtle: 18,    // rùa: chậm, rất lì; bị doạ thì rụt vào mai nằm im
+      boar: 20,      // lợn rừng: con mồi cỡ vừa, nhiều thịt cho khủng long lớn
+    },
   },
 
   // ---------------------------------------------------------------------------------

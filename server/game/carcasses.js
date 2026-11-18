@@ -78,10 +78,11 @@ export function createCarcasses(cfg, rng = Math.random) {
     return { ok: false, reason: 'Xác quá nặng để tha đi' };
   }
 
+  const r2 = (v) => Math.round(v * 100) / 100; // làm tròn trước khi gửi (bớt dung lượng)
   /** Dữ liệu gửi cho client. */
   const view = (c) => ({
-    id: c.id, type: c.type, kind: c.kind, stage: c.stage, x: c.x, y: c.y, z: c.z, yaw: c.yaw,
-    rot: rot01(c), meat01: c.meat / c.meatMax, carried: c.carriedBy != null, mode: c.mode, colors: c.colors,
+    id: c.id, type: c.type, kind: c.kind, stage: c.stage, x: r2(c.x), y: r2(c.y), z: r2(c.z), yaw: r2(c.yaw),
+    rot: r2(rot01(c)), meat01: r2(c.meat / c.meatMax), carried: c.carriedBy != null, mode: c.mode, colors: c.colors,
   });
 
   return {

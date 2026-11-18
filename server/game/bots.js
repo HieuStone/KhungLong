@@ -2,7 +2,7 @@
 // (server/index.js), chỉ khác là `input` do hàm think() tạo ra thay vì từ bàn phím. Mọi tham số chỉnh ở server/game.config.js.
 import {
   SPECIES, SPECIES_IDS, STAGE_SCALE, GROWTH_STAGES, WATER_LEVEL, heightAt, groundAt, findSpawn, bodyRadius,
-  mulberry32, getWorld, islandAt,
+  mulberry32, getWorld, islandAt, maxWadeDepth,
 } from '@isle/shared';
 import { createVitals } from './survival.js';
 
@@ -11,6 +11,35 @@ export const sizeOf = (c) => SPECIES[c.species].bodyLength * STAGE_SCALE[c.stage
 const isCarnivore = (c) => SPECIES[c.species].diet === 'carnivore';
 const dist2d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const stageIndex = (s) => Math.max(0, GROWTH_STAGES.indexOf(s));
+/** Độ sâu nước tối đa con này tới được an toàn (loài bay: chỉ đáp được ở nước nông). */
+const safeDepth = (c) => maxWadeDepth(c.species, c.stage) * 0.8;
+const depthAt = (x, z) => WATER_LEVEL - heightAt(x, z);
+
+/**
+ * Máu (tỉ lệ) dưới mức này thì bỏ chạy khỏi kẻ đang đánh mình. Đối thủ to hơn hẳn thì chạy sớm;
+ * ngang cỡ hoặc nhỏ hơn thì đánh tới cùng (trước đây chạy ở 30% rồi trốn xuống nước, hồi máu, nên trên cạn hầu như không ai chết).
+ */
+export function fleeThreshold(bot, attacker) {
+  const ratio = sizeOf(attacker) / sizeOf(bot);
+  return ratio > 1.5 ? 0.35 : ratio > 1.15 ? 0.2 : 0.08;
+}
+
+/**
+ * Hướng chạy trốn: tránh xa kẻ thù nhưng ưu tiên đất liền (không lao xuống nước, nơi bị chậm lại và bị hạ).
+ * Trả về điểm đích cách ~25 m.
+ */
+export function fleePoint(bot, from) {
+  const away = Math.atan2(bot.z - from.z, bot.x - from.x);
+  let best = null, bestScore = -Infinity;
+  for (const off of [0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5]) {
+    const a = away + off, x = bot.x + Math.cos(a) * 25, z = bot.z + Math.sin(a) * 25;
+    const mid = depthAt(bot.x + Math.cos(a) * 12, bot.z + Math.sin(a) * 12);
+    const wet = Math.max(0, depthAt(x, z)) + Math.max(0, mid);
+    const score = -Math.abs(off) * 2 - wet * 6 + Math.hypot(x - from.x, z - from.z) * 0.1;
+    if (score > bestScore) { bestScore = score; best = { x, z }; }
+  }
+  return best;
+}
 
 /** growth tối đa theo mức tiến hoá tối đa (maxStage). 'adult' = không giới hạn. */
 export function growthCap(maxStage) {
@@ -226,7 +255,9 @@ export function createBots({ config, players, npcs, carcasses, act, allocId, see
     let best = null, bd = Infinity;
     for (let r = 8; r <= 160; r += 12) for (let i = 0; i < 16; i++) {
       const a = (i / 16) * Math.PI * 2, x = bot.x + Math.cos(a) * r, z = bot.z + Math.sin(a) * r;
-      if (heightAt(x, z) < WATER_LEVEL - 0.1 && r < bd) { bd = r; best = { x, z }; }
+      // nước nông sát bờ: đi/đáp tới được (trước đây chọn cả chỗ nước sâu, kẹt lại rồi chết đói giữa biển)
+      const d = depthAt(x, z);
+      if (d > 0.1 && d < safeDepth(bot) && r < bd) { bd = r; best = { x, z }; }
     }
     return best;
   }
@@ -236,6 +267,7 @@ export function createBots({ config, players, npcs, carcasses, act, allocId, see
     for (const c of carcasses.near(bot.x, bot.z, range)) {
       const r = carcasses.rot01(c);
       if (r > 0.7 && bot.vitals.hunger > 0.2) continue; // chỉ ăn thịt thối khi sắp chết đói
+      if (depthAt(c.x, c.z) > safeDepth(bot)) continue; // xác chìm ở nước sâu: không tới được
       if (!reachable(bot, c.x, c.z)) continue;
       const d = Math.hypot(c.x - bot.x, c.z - bot.z);
       if (d < bd) { bd = d; best = c; }
@@ -298,8 +330,9 @@ export function createBots({ config, players, npcs, carcasses, act, allocId, see
     // ---- 2. Phản công kẻ vừa đánh mình (cả loài ăn cỏ) ----
     if (ai.state !== 'flee' && P.provokedAlwaysFights && bot.lastAttackerId != null && bot.age - bot.lastHitAge < 15 && P.herbivoresFightBack) {
       const a = all.find((c) => c.id === bot.lastAttackerId && c.vitals.hp > 0);
-      if (a && v.hp > bot.vitals.maxHp * 0.3 && dist2d(a, bot) < P.loseInterestRange) { if (ai.state !== 'hunt') { ai.state = 'hunt'; ai.target = { kind: 'creature', ref: a }; ai.huntT = 0; } }
-      else if (a && v.hp <= v.maxHp * 0.3) { ai.state = 'flee'; ai.fleeFrom = a; }
+      const fleeAt = a ? fleeThreshold(bot, a) : 0;
+      if (a && v.hp > v.maxHp * fleeAt && dist2d(a, bot) < P.loseInterestRange) { if (ai.state !== 'hunt') { ai.state = 'hunt'; ai.target = { kind: 'creature', ref: a }; ai.huntT = 0; } }
+      else if (a && v.hp <= v.maxHp * fleeAt) { ai.state = 'flee'; ai.fleeFrom = a; }
     }
 
     // ---- 3. Nhu cầu: khát / đói ----
@@ -327,7 +360,7 @@ export function createBots({ config, players, npcs, carcasses, act, allocId, see
       case 'flee': {
         const f = ai.fleeFrom;
         if (!f || f.vitals.hp <= 0 || dist2d(bot, f) > P.fearRange * 1.6) { ai.state = 'wander'; break; }
-        const away = { x: bot.x + (bot.x - f.x), z: bot.z + (bot.z - f.z) };
+        const away = flyer ? { x: bot.x + (bot.x - f.x), z: bot.z + (bot.z - f.z) } : fleePoint(bot, f);
         steer(bot, away.x, away.z, true);
         flyControl(bot, 50, { cruise: 18 });
         break;
@@ -335,7 +368,9 @@ export function createBots({ config, players, npcs, carcasses, act, allocId, see
       case 'hunt': {
         ai.huntT += stepDt;
         const t = resolveTarget(ai.target);
-        if (!t || ai.huntT > P.huntGiveUpSeconds || dist2d(bot, t) > P.loseInterestRange) { ai.state = 'wander'; ai.target = null; break; }
+        // con mồi đã trọng thương thì đuổi lâu hơn (kết liễu thay vì để nó trốn đi hồi máu)
+        const wounded = t?.obj?.vitals ? t.obj.vitals.hp / t.obj.vitals.maxHp < 0.35 : false;
+        if (!t || ai.huntT > P.huntGiveUpSeconds * (wounded ? 1.6 : 1) || dist2d(bot, t) > P.loseInterestRange) { ai.state = 'wander'; ai.target = null; break; }
         const wp = route(bot, t.x, t.z);
         if (!wp) { ai.state = 'wander'; ai.target = null; break; } // mục tiêu ở đảo không có cầu nối
         steer(bot, wp.x, wp.z, true);

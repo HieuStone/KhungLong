@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nghe thử âm thanh</title>
+<style>
+  :root { --bg: #f6f4ef; --fg: #1d1d1b; --muted: #6b6a66; --card: #fff; --line: #dedbd3; --acc: #2f6b3a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe6; --muted: #9a998f; --card: #222220; --line: #34332f; --acc: #7cc58a; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 20px 0 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+  button { font: inherit; text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button:hover { border-color: var(--acc); }
+  button.on { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc) inset; }
+  small { color: var(--muted); display: block; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Nghe thử tiếng khủng long</h1>
+<p>Đọc manifest.json, phát từng mẫu với cao độ đổi theo cỡ thân giống trong game. Mẫu nào không ưng thì xoá dòng đó trong manifest.json.</p>
+<div class="bar">
+  <label>Cỡ thân: <input id="size" type="range" min="0.5" max="15" step="0.5" value="12"> <b id="sizeV">12</b> m</label>
+  <label><input id="filter" type="checkbox" checked> Chỉ hiện mẫu hợp cỡ thân</label>
+</div>
+<div id="list"></div>
+<script>
+const ctx = new AudioContext();
+const cache = new Map();
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+let man = {}, cur = null;
+async function buf(file) {
+  if (!cache.has(file)) cache.set(file, fetch(file).then((r) => r.arrayBuffer()).then((a) => ctx.decodeAudioData(a)));
+  return cache.get(file);
+}
+function rateFor(name, kind, size) {
+  if (name === 'roar') return clamp(Math.pow(6 / size, 0.25), 0.7, 1.6);
+  if (name === 'step') return clamp(Math.pow(2 / size, 0.22), 0.62, 1.25);
+  if (name === 'stomp') return kind === 'sub' ? clamp(Math.pow(10 / size, 0.2), 0.9, 1.25) : clamp(Math.pow(5 / size, 0.3), 0.65, 1.35);
+  if ((name === 'hurt' || name === 'die') && kind === 'dino') return clamp(Math.pow(6 / size, 0.18), 0.8, 1.35);
+  return 1;
+}
+async function play(name, kind, e, btn) {
+  await ctx.resume();
+  if (cur) { try { cur.stop(); } catch {} }
+  document.querySelectorAll('button.on').forEach((b) => b.classList.remove('on'));
+  const b = await buf(e.file);
+  const s = ctx.createBufferSource(); s.buffer = b;
+  s.playbackRate.value = rateFor(name, kind, +$('size').value);
+  const off = e.start || 0, end = e.end ?? b.duration;
+  s.connect(ctx.destination); s.start(0, off, end - off); cur = s;
+  btn.classList.add('on'); s.onended = () => btn.classList.remove('on');
+}
+// Ghép bước chân giống audio.js (playStepSamples): bề mặt + "thịch" + rung đất
+const fits = (e, size) => size >= (e.minSize ?? 0) && size <= (e.maxSize ?? Infinity);
+const rnd = (arr, size) => { const c = (arr || []).filter((e) => fits(e, size)); return c[Math.floor(Math.random() * c.length)]; };
+async function layer(e, rate, peak, t) {
+  if (!e) return;
+  const b = await buf(e.file), s = ctx.createBufferSource(), g = ctx.createGain();
+  s.buffer = b; s.playbackRate.value = rate; g.gain.value = peak; s.connect(g); g.connect(ctx.destination); s.start(t);
+}
+async function walk(surf, n) {
+  await ctx.resume();
+  const size = +$('size').value, big = clamp((size - 1.5) / 6, 0, 1);
+  const gap = clamp(0.25 + size * 0.06, 0.3, 1.0); // con to bước chậm hơn
+  for (let i = 0; i < n; i++) {
+    const t = ctx.currentTime + 0.05 + i * gap, amp = 0.9;
+    await layer(rnd(man.step?.[surf], size), rateFor('step', surf, size), (0.45 + 0.3 * big) * amp, t);
+    if (size >= 1.8) await layer(rnd(man.stomp?.thud, size), rateFor('stomp', 'thud', size), 0.85 * clamp(big, 0.2, 1) * amp * (surf === 'water' ? 0.5 : 1), t);
+    if (size >= 5) await layer(rnd(man.stomp?.sub, size), rateFor('stomp', 'sub', size), clamp((size - 4) / 7, 0.2, 1) * amp, t);
+  }
+}
+function render() {
+  const size = +$('size').value, only = $('filter').checked;
+  $('sizeV').textContent = size;
+  const root = $('list'); root.innerHTML = '';
+  if (man.step) {
+    const h = document.createElement('h2'); h.textContent = 'Bước chân (ghép lớp như trong game, 6 bước)'; root.append(h);
+    const g = document.createElement('div'); g.className = 'grid'; root.append(g);
+    for (const surf of Object.keys(man.step)) {
+      const btn = document.createElement('button'); btn.innerHTML = `▶ đi trên ${surf}<small>bề mặt + thịch + rung đất</small>`;
+      btn.onclick = () => walk(surf, 6); g.append(btn);
+    }
+  }
+  for (const [name, kinds] of Object.entries(man)) {
+    if (name.startsWith('_')) continue;
+    for (const [kind, arr] of Object.entries(kinds)) {
+      const h = document.createElement('h2'); h.textContent = `${name} / ${kind}`; root.append(h);
+      const g = document.createElement('div'); g.className = 'grid'; root.append(g);
+      arr.forEach((it) => {
+        const e = typeof it === 'string' ? { file: it } : it;
+        const ok = size >= (e.minSize ?? 0) && size <= (e.maxSize ?? Infinity);
+        if (only && !ok) return;
+        const btn = document.createElement('button');
+        btn.innerHTML = `▶ ${e.file.replace(/^.*\//, '')}<small>cỡ ${e.minSize ?? 0}–${e.maxSize ?? '∞'} m</small>`;
+        btn.onclick = () => play(name, kind, e, btn);
+        g.append(btn);
+      });
+    }
+  }
+}
+$('size').oninput = render; $('filter').onchange = render;
+fetch('manifest.json').then((r) => r.json()).then((m) => { man = m; render(); });
+</script>
+</body>
+</html>

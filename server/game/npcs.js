@@ -1,4 +1,4 @@
-// NPC con mồi: gà, thỏ, chuột, chim. Server điều khiển, client chỉ vẽ.
+// NPC con mồi: gà, thỏ, chuột, chim, thằn lằn, rùa, lợn rừng. Server điều khiển, client chỉ vẽ.
 import {
   NPC_KINDS, NPC_IDS, WATER_LEVEL, TICK_DT, heightAt, groundAt, stepBody, findSpawn, mulberry32,
 } from '@isle/shared';
@@ -8,7 +8,8 @@ const RESPAWN_AFTER = 20;     // giây sau khi xác biến mất thì con mới 
 const HOME_RADIUS = 45;       // NPC lang thang quanh chỗ sinh ra
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
-export function createNpcs(seed = 1) {
+/** counts: { loài: số lượng } ghi đè NPC_KINDS[*].count (lấy từ server/game.config.js -> prey.counts). */
+export function createNpcs(seed = 1, counts = {}) {
   const rng = mulberry32(seed);
   const npcs = new Map();
   let nextId = 1;
@@ -27,7 +28,8 @@ export function createNpcs(seed = 1) {
   }
 
   const pendingRespawns = [];
-  for (const kind of NPC_IDS) for (let i = 0; i < NPC_KINDS[kind].count; i++) spawnOne(kind);
+  const countOf = (kind) => Math.max(0, Math.floor(counts[kind] ?? NPC_KINDS[kind].count));
+  for (const kind of NPC_IDS) for (let i = 0; i < countOf(kind); i++) spawnOne(kind);
 
   /** Người chơi gần nhất đáng sợ (đang đứng yên thì dễ lại gần hơn, chạy thì bị phát hiện từ xa). */
   function nearestThreat(n, def, players) {
@@ -59,11 +61,12 @@ export function createNpcs(seed = 1) {
         // Chạy trốn: hướng ra xa người chơi, thỏ chạy ziczac
         const ax = n.x - threat.p.x, az = n.z - threat.p.z, len = Math.hypot(ax, az) || 1;
         n.zig += dt * 6;
-        const jitter = n.kind === 'rabbit' ? Math.sin(n.zig) * 0.7 : Math.sin(n.zig * 0.5) * 0.25;
+        const jitter = n.kind === 'rabbit' ? Math.sin(n.zig) * 0.7 : def.zigzag ? Math.sin(n.zig * 1.4) * def.zigzag : Math.sin(n.zig * 0.5) * 0.25;
         const fx = ax / len, fz = az / len;
         wantX = fx * Math.cos(jitter) - fz * Math.sin(jitter);
         wantZ = fx * Math.sin(jitter) + fz * Math.cos(jitter);
         if (def.flies) { n.state = 'fly'; n.timer = 4 + rng() * 3; speed = def.fly * 0.9; }
+        else if (def.hides) { n.state = 'hide'; n.timer = 3 + rng() * 3; speed = 0; } // rùa: rụt đầu nằm im
         else { n.state = 'flee'; speed = def.run; }
       } else if (n.state === 'fly') {
         // Bay thêm một lúc rồi hạ cánh
@@ -81,7 +84,8 @@ export function createNpcs(seed = 1) {
             n.dirX = Math.cos(a); n.dirZ = Math.sin(a);
           }
         }
-        if (n.state === 'walk') { wantX = n.dirX; wantZ = n.dirZ; speed = def.walk; }
+        if (n.state === 'hide') { if (n.timer <= 0) { n.state = 'idle'; n.timer = 2 + rng() * 3; } }
+        else if (n.state === 'walk') { wantX = n.dirX; wantZ = n.dirZ; speed = def.walk; }
         else if (n.state === 'flee') { wantX = n.dirX; wantZ = n.dirZ; speed = def.run; } // bị đánh: chạy khỏi kẻ tấn công
       }
 
@@ -114,8 +118,11 @@ export function createNpcs(seed = 1) {
   /** Trạng thái gửi cho client (NpcState trong shared/npcs.js). */
   function view(n) {
     const def = NPC_KINDS[n.kind];
-    const anim = !n.alive ? 'dead' : n.state === 'fly' ? 'fly' : speedOf(n) > def.walk * 1.6 ? 'run' : speedOf(n) > 0.25 ? 'walk' : 'idle';
-    return { id: n.id, kind: n.kind, x: n.x, y: n.y, z: n.z, yaw: n.yaw, anim, hp01: n.hp / def.hp };
+    // rùa trốn trong mai gửi anim 'run' (client vẽ thành rụt đầu/chân) cho khỏi thêm trạng thái mới vào giao thức
+    const anim = !n.alive ? 'dead' : n.state === 'fly' ? 'fly' : n.state === 'hide' ? 'run'
+      : speedOf(n) > def.walk * 1.6 ? 'run' : speedOf(n) > Math.min(0.25, def.walk * 0.5) ? 'walk' : 'idle';
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return { id: n.id, kind: n.kind, x: r2(n.x), y: r2(n.y), z: r2(n.z), yaw: Math.round(n.yaw * 1000) / 1000, anim, hp01: r2(n.hp / def.hp) };
   }
 
   /** NPC (sống hay chết) trong bán kính range quanh (x, z). */
@@ -138,7 +145,7 @@ export function createNpcs(seed = 1) {
     }
     const ax = n.x - fromX, az = n.z - fromZ, len = Math.hypot(ax, az) || 1;
     n.dirX = ax / len; n.dirZ = az / len;
-    n.state = NPC_KINDS[n.kind].flies ? 'fly' : 'flee'; n.timer = 2.5; // bị đánh thì hoảng chạy/bay đi
+    n.state = NPC_KINDS[n.kind].flies ? 'fly' : NPC_KINDS[n.kind].hides ? 'hide' : 'flee'; n.timer = 2.5; // bị đánh thì hoảng chạy/bay đi (rùa: rụt vào mai)
     return { killed: false };
   }
 
@@ -149,7 +156,7 @@ export function createNpcs(seed = 1) {
       const ax = n.x - x, az = n.z - z, d = Math.hypot(ax, az);
       if (d > range) continue;
       n.dirX = ax / (d || 1); n.dirZ = az / (d || 1);
-      n.state = NPC_KINDS[n.kind].flies ? 'fly' : 'flee';
+      n.state = NPC_KINDS[n.kind].flies ? 'fly' : NPC_KINDS[n.kind].hides ? 'hide' : 'flee';
       n.timer = 3 + rng() * 2;
     }
   }

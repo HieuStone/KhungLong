@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getWorld } from '@isle/shared';
+import { pbr, broadLeafCluster, needleCluster, frondTexture } from './pbr.js';
 
 // ============================================================
 // Tiện ích: noise xác định (KHÔNG Math.random) và dựng hình
@@ -42,9 +43,12 @@ class Builder {
   constructor() { this.parts = []; }
   // geo đã đặt đúng vị trí; fn(x,y,z,nx,ny,nz) -> Color
   add(geo, fn) {
-    let g = geo.index ? geo.toNonIndexed() : geo;
-    g.deleteAttribute('uv');
-    g.computeVertexNormals(); // pháp tuyến phẳng theo mặt (low-poly)
+    // Pháp tuyến mượt: gộp đỉnh trùng, tính pháp tuyến trung bình rồi mới tách mặt (tô màu từng đỉnh vẫn giữ)
+    let g = geo.clone();
+    g.deleteAttribute('uv'); g.deleteAttribute('normal');
+    g = mergeVertices(g, 1e-4);
+    g.computeVertexNormals();
+    g = g.toNonIndexed();
     const p = g.attributes.position, n = g.attributes.normal;
     const cs = new Float32Array(p.count * 3);
     for (let i = 0; i < p.count; i++) {
@@ -101,7 +105,7 @@ function tube(pts, radii, radial = 6) {
  * rủ xuống thêm `droop` rad dọc theo chiều dài. widthFn(t) -> nửa bề rộng.
  */
 function leaf(origin, len, az, elev, droop, widthFn, segs = 6) {
-  const pos = [], idx = [];
+  const pos = [], idx = [], uv = [];
   const dir = new THREE.Vector3(Math.cos(az), 0, Math.sin(az));
   const side = new THREE.Vector3(-Math.sin(az), 0, Math.cos(az));
   const p = origin.clone();
@@ -112,6 +116,7 @@ function leaf(origin, len, az, elev, droop, widthFn, segs = 6) {
     const mid = p.clone().add(new THREE.Vector3(0, w * 0.35, 0)); // gờ giữa nhô lên
     const l = p.clone().addScaledVector(side, w), r = p.clone().addScaledVector(side, -w);
     pos.push(l.x, l.y, l.z, mid.x, mid.y, mid.z, r.x, r.y, r.z);
+    uv.push(0, t, 0.5, t, 1, t);
     const pitch = elev - droop * t * t; // càng về ngọn càng rủ
     p.addScaledVector(dir, Math.cos(pitch) * step);
     p.y += Math.sin(pitch) * step;
@@ -122,9 +127,69 @@ function leaf(origin, len, az, elev, droop, widthFn, segs = 6) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
   return g;
 }
+
+/**
+ * Bộ gom "tấm lá" (card): mỗi tấm là 1 hình chữ nhật dán ảnh cành lá có kênh trong suốt.
+ * Pháp tuyến đặt theo hướng ra ngoài tán (không theo mặt tấm) => cả tán sáng tối mềm như một khối lá thật.
+ */
+class CardBuilder {
+  constructor() { this.pos = []; this.nrm = []; this.uv = []; this.col = []; this.idx = []; this.extra = []; }
+  // base: gốc cành; dir: hướng cành (gốc->ngọn); side: hướng bề ngang; len, wid: kích thước; n: pháp tuyến; c: màu nhuộm
+  card(base, dir, side, len, wid, n, c) {
+    const i0 = this.pos.length / 3;
+    const pts = [
+      base.clone().addScaledVector(side, -wid / 2), base.clone().addScaledVector(side, wid / 2),
+      base.clone().addScaledVector(side, -wid / 2).addScaledVector(dir, len), base.clone().addScaledVector(side, wid / 2).addScaledVector(dir, len),
+    ];
+    const uvs = [[0, 0], [1, 0], [0, 1], [1, 1]];
+    pts.forEach((q, k) => { this.pos.push(q.x, q.y, q.z); this.nrm.push(n.x, n.y, n.z); this.uv.push(...uvs[k]); this.col.push(c.r, c.g, c.b); });
+    this.idx.push(i0, i0 + 1, i0 + 2, i0 + 1, i0 + 3, i0 + 2);
+  }
+  // thêm hình học có sẵn (vd lá cọ có UV); pháp tuyến tính lại, màu đồng nhất
+  geo(g, c, upBias = 0.5) {
+    g.computeVertexNormals();
+    const P = g.attributes.position, N = g.attributes.normal, UV = g.attributes.uv, i0 = this.pos.length / 3;
+    for (let i = 0; i < P.count; i++) {
+      const nn = new THREE.Vector3(N.getX(i), Math.abs(N.getY(i)) + upBias, N.getZ(i)).normalize();
+      this.pos.push(P.getX(i), P.getY(i), P.getZ(i)); this.nrm.push(nn.x, nn.y, nn.z);
+      this.uv.push(UV.getX(i), UV.getY(i)); this.col.push(c.r, c.g, c.b);
+    }
+    for (const k of g.index.array) this.idx.push(i0 + k);
+  }
+  build() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    g.setIndex(this.idx);
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+
+/** Rải tấm cành lá lên một khối tán hình elip (tâm c, bán kính s), pháp tuyến hướng từ tâm tán toàn cây. */
+function scatterCards(cb, r, c, s, n, crownCenter, tone, sizeK = 1.25) {
+  for (let i = 0; i < n; i++) {
+    const u = r() * 2 - 1, a = r() * Math.PI * 2, rr = Math.sqrt(1 - u * u) * Math.cbrt(r()) * 0.8;
+    const p = V(c.x + Math.cos(a) * rr * s, c.y + u * s * 0.65, c.z + Math.sin(a) * rr * s);
+    const out = p.clone().sub(crownCenter).normalize();
+    const dir = out.clone().add(V((r() - 0.5) * 0.9, 0.35 + r() * 0.4, (r() - 0.5) * 0.9)).normalize();
+    let side = new THREE.Vector3().crossVectors(dir, V(r() - 0.5, r() - 0.5, r() - 0.5).normalize());
+    if (side.lengthSq() < 1e-4) side = V(1, 0, 0);
+    side.normalize();
+    const len = s * sizeK * (0.75 + r() * 0.4);
+    const base = p.clone().addScaledVector(dir, -len * 0.45);
+    const nrm = out.clone().add(V(0, 0.45, 0)).normalize();
+    const k = tone * (0.82 + r() * 0.3);
+    cb.card(base, dir, side, len, len, nrm, _c.setRGB(k * (0.95 + r() * 0.1), k, k * (0.9 + r() * 0.1)).clone());
+  }
+}
+
 
 /** Khối cầu low-poly xô lệch bằng noise xác định. */
 function blob(cx, cy, cz, rx, ry, rz, seed, detail = 1, jitter = 0.28) {
@@ -143,7 +208,8 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 // ============================================================
 // CÂY: mỗi loại dựng sẵn theo mét ở scale = 1 (chiều cao khớp PLANT_DEF.h trong shared/world.js)
 // ============================================================
-const BARK = col(0x6b4a2f), BARK_D = col(0x4a3220), GREY = col(0x8a8074), GREY_D = col(0x5d554b);
+// Màu ở đây là màu NHUỘM nhân với ảnh vỏ cây thật (gần trắng = giữ nguyên màu ảnh)
+const BARK = col(0xf2ece4), BARK_D = col(0xb8aea2), GREY = col(0xd8d6d2), GREY_D = col(0xa6a39f);
 
 function buildPine() {
   const b = new Builder();
@@ -151,28 +217,26 @@ function buildPine() {
   const pts = [], rad = [];
   for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(V(Math.sin(t * 2.2) * 0.12, t * 9.8, Math.sin(t * 1.7) * 0.1)); rad.push(0.5 * (1 - t) + 0.05); }
   b.add(tube(pts, rad, 6), (x, y) => mix(BARK_D, BARK, y / 6));
-  // 7 tầng nón nhỏ dần, lệch/ xô nhẹ để không đối xứng hoàn hảo
-  const r = rngOf(11);
-  for (let i = 0; i < 7; i++) {
-    const t = i / 6;
-    const y0 = 1.7 + t * 6.7, rr = 2.35 * (1 - t * 0.82) + 0.12, hh = 2.5 - t * 0.9;
-    const ox = (r() - 0.5) * 0.35, oz = (r() - 0.5) * 0.35;
-    const g = new THREE.ConeGeometry(rr, hh, 9, 2);
-    const p = g.attributes.position;
-    for (let k = 0; k < p.count; k++) {
-      const x = p.getX(k), y = p.getY(k), z = p.getZ(k);
-      const f = 1 + (vnoise(x * 1.3 + i * 5, y * 1.3, z * 1.3, 4) - 0.5) * 0.45;
-      const edge = Math.hypot(x, z) > 0.01 ? 1 : 0;
-      p.setXYZ(k, ox + x * f, y0 + hh / 2 + y - (edge && y < -hh * 0.4 ? 0.25 * rr * 0.3 : 0), oz + z * f);
+  // Cành lá kim: 8 tầng, mỗi tầng 9-11 cành toả ra và rủ xuống; mỗi cành = 2 tấm bắt chéo cho có độ dày
+  const cb = new CardBuilder(), r = rngOf(11);
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8;
+    const y0 = 1.9 + t * 7.3, rr = 2.5 * (1 - t * 0.85) + 0.25;
+    const K = Math.round(10 - t * 3);
+    for (let k = 0; k < K; k++) {
+      const az = (k / K) * Math.PI * 2 + r() * 0.5 + i * 0.7;
+      const dir = V(Math.cos(az), -0.18 - t * 0.12 - r() * 0.15, Math.sin(az)).normalize();
+      const side = V(-Math.sin(az), 0.12, Math.cos(az)).normalize();
+      const up = new THREE.Vector3().crossVectors(side, dir).normalize();
+      const len = rr * (0.95 + r() * 0.3), base = V(Math.sin(y0 / 9.8 * 2.2) * 0.12, y0 + r() * 0.3, Math.sin(y0 / 9.8 * 1.7) * 0.1);
+      const nrm = V(Math.cos(az), 0.7, Math.sin(az)).normalize(), tone = 0.85 + r() * 0.25;
+      cb.card(base, dir, side, len, len * 0.8, nrm, _c.setRGB(tone, tone, tone).clone());
+      cb.card(base, dir, up, len, len * 0.5, nrm, _c.setRGB(tone * 0.9, tone * 0.9, tone * 0.9).clone());
     }
-    const tone = 0.85 + r() * 0.3;
-    b.add(g, (x, y) => {
-      const ty = (y - y0) / hh;
-      mix(col(0x0d3a1b), col(0x2c7a3a), ty * 0.9).multiplyScalar(tone);
-      return _c;
-    });
   }
-  return b.build();
+  // ngọn
+  for (let k = 0; k < 3; k++) { const az = k * 2.1; cb.card(V(0, 9.0, 0), V(Math.cos(az) * 0.15, 1, Math.sin(az) * 0.15).normalize(), V(-Math.sin(az), 0, Math.cos(az)), 1.4, 0.9, V(0, 1, 0), _c.setRGB(1, 1, 1).clone()); }
+  return { wood: b.build(), leaves: cb.build(), leafTex: 'needle', bark: 'pine_bark' };
 }
 
 function buildBroadleaf() {
@@ -184,16 +248,11 @@ function buildBroadleaf() {
   for (const [bx, by, bz] of br) {
     b.add(tube([V(0, 3.4, 0), V(bx * 0.45, 4.3, bz * 0.45), V(bx, by, bz)], [0.3, 0.22, 0.12], 5), () => BARK);
   }
-  // Tán: 7 khối cầu chồng, hai tông xanh
-  const r = rngOf(23);
+  // Tán: các tấm cành lá thật rải trong 7 khối tán
+  const r = rngOf(23), cb = new CardBuilder(), crown = V(0.2, 5.9, 0.1);
   const centers = [[0, 6.0, 0, 2.1], [1.7, 5.3, 0.5, 1.6], [-1.5, 5.2, 0.9, 1.55], [0.3, 5.5, -1.6, 1.6], [0.9, 7.0, 0.7, 1.3], [-0.9, 6.9, -0.4, 1.35], [0.2, 4.6, 1.5, 1.2]];
-  centers.forEach(([cx, cy, cz, s], i) => {
-    const light = i % 2 === 0;
-    const A = light ? col(0x3f9a3a) : col(0x2b7a35), B = light ? col(0x7ac14a) : col(0x4fa143);
-    const bg = blob(cx, cy, cz, s * (1 + r() * 0.15), s * 0.82, s * (1 + r() * 0.15), i * 3 + 1, 1, 0.22);
-    b.add(bg, (x, y, z, nx, ny) => mix(A, B, ny * 0.5 + 0.35 + (y - cy) * 0.12));
-  });
-  return b.build();
+  centers.forEach(([cx, cy, cz, s], i) => scatterCards(cb, r, V(cx, cy, cz), s, 13, crown, i % 2 ? 0.9 : 1.05));
+  return { wood: b.build(), leaves: cb.build(), leafTex: 'broad', bark: 'bark_brown_02' };
 }
 
 function buildPalm() {
@@ -202,27 +261,24 @@ function buildPalm() {
   const pts = [], rad = [];
   const N = 14;
   for (let i = 0; i <= N; i++) { const t = i / N; pts.push(V(Math.pow(t, 1.8) * 1.1, t * 6.2, Math.sin(t * 2) * 0.12)); rad.push(0.34 - t * 0.15); }
-  b.add(tube(pts, rad, 6), (x, y) => (Math.floor(y * 3.2) % 2 === 0 ? _c.copy(col(0x8c6a45)) : _c.copy(col(0x6c4f32))));
+  b.add(tube(pts, rad, 6), (x, y) => (Math.floor(y * 3.2) % 2 === 0 ? _c.setRGB(0.36, 0.32, 0.28) : _c.setRGB(0.27, 0.24, 0.21)));
   const top = pts[N];
+  const cb = new CardBuilder();
   // 11 lá dài rủ cong xuống
   const r = rngOf(31);
   for (let i = 0; i < 12; i++) {
     const az = (i / 12) * Math.PI * 2 + (r() - 0.5) * 0.3;
     const len = 3.0 + r() * 0.7, elev = 0.5 + r() * 0.35, droop = 1.7 + r() * 0.6;
-    const g = leaf(top, len, az, elev, droop, (t) => 0.55 * Math.sin(Math.PI * Math.min(1, t * 1.1 + 0.06)) + 0.04, 7);
+    const g = leaf(top, len, az, elev, droop, (t) => 0.75 * Math.sin(Math.PI * Math.min(1, t * 1.1 + 0.06)) + 0.05, 9);
     const tone = 0.85 + r() * 0.3;
-    b.add(g, (x, y, z) => {
-      const d = Math.hypot(x - top.x, z - top.z) / 3.4;
-      mix(col(0x2f7a2a), col(0x7ec44a), d * 0.9).multiplyScalar(tone);
-      return _c;
-    });
+    cb.geo(g, _c.setRGB(tone, tone, tone * 0.95).clone());
   }
   // chùm quả
   for (let i = 0; i < 4; i++) {
     const a = i * 1.7;
-    b.add(blob(top.x + Math.cos(a) * 0.28, top.y - 0.35, top.z + Math.sin(a) * 0.28, 0.22, 0.24, 0.22, i + 40, 1, 0.1), () => col(0x5a3a1c));
+    b.add(blob(top.x + Math.cos(a) * 0.28, top.y - 0.35, top.z + Math.sin(a) * 0.28, 0.22, 0.24, 0.22, i + 40, 1, 0.1), () => _c.setRGB(0.55, 0.45, 0.35));
   }
-  return b.build();
+  return { wood: b.build(), leaves: cb.build(), leafTex: 'palm', bark: 'palm_tree_bark' };
 }
 
 function buildDead() {
@@ -256,51 +312,39 @@ function buildDead() {
   }
   // Ngọn trơ trụi
   branch(pts[6], V(0.1, 1, 0.05).normalize(), 1.1, 0.07, 1);
-  return b.build();
+  return { wood: b.build(), leaves: null, bark: 'bark_brown_02' };
 }
 
 function buildFern() {
   const b = new Builder();
   // Thân củ thấp (kiểu tuế)
-  b.add(tube([V(0, 0, 0), V(0.02, 0.18, 0), V(0, 0.4, 0.02)], [0.26, 0.24, 0.17], 7), (x, y) => mix(col(0x4a3822), col(0x7a6040), y / 0.4));
-  const r = rngOf(59);
+  b.add(tube([V(0, 0, 0), V(0.02, 0.18, 0), V(0, 0.4, 0.02)], [0.26, 0.24, 0.17], 7), (x, y) => mix(col(0x8a7a66), col(0xd8c8b0), y / 0.4));
+  const r = rngOf(59), cb = new CardBuilder();
   const mk = (n, len, elev, droop, w, y0) => {
     for (let i = 0; i < n; i++) {
       const az = (i / n) * Math.PI * 2 + r() * 0.4;
       const l = len * (0.85 + r() * 0.3);
       const tone = 0.85 + r() * 0.3;
       // bề rộng răng cưa mô phỏng lá chét
-      const wf = (t) => w * Math.sin(Math.PI * Math.min(1, t * 1.05 + 0.04)) * (0.65 + 0.35 * (Math.round(t * 14) % 2)) + 0.012;
-      b.add(leaf(V(0, y0, 0), l, az, elev + (r() - 0.5) * 0.2, droop, wf, 14), (x, y, z) => {
-        const d = Math.hypot(x, z) / len;
-        mix(col(0x1f7a2c), col(0x7fd048), d * 0.8).multiplyScalar(tone);
-        return _c;
-      });
+      const wf = (t) => w * 1.9 * Math.sin(Math.PI * Math.min(1, t * 1.05 + 0.04)) + 0.02;
+      cb.geo(leaf(V(0, y0, 0), l, az, elev + (r() - 0.5) * 0.2, droop, wf, 10), _c.setRGB(tone, tone, tone * 0.95).clone());
     }
   };
   mk(9, 1.75, 0.45, 1.3, 0.12, 0.3);
   mk(6, 1.25, 1.0, 1.0, 0.1, 0.4);
-  return b.build();
+  return { wood: b.build(), leaves: cb.build(), leafTex: 'fern', bark: 'bark_brown_02' };
 }
 
 function buildBush() {
   const b = new Builder();
-  const r = rngOf(71);
-  const n = 5;
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 + r();
-    const d = i === 0 ? 0 : 0.35 + r() * 0.25;
-    const s = 0.38 + r() * 0.22;
-    const cx = Math.cos(a) * d, cz = Math.sin(a) * d, cy = 0.38 + r() * 0.3;
-    b.add(blob(cx, cy, cz, s * 1.15, s * 0.85, s * 1.15, i * 5 + 2, 1, 0.22), (x, y, z, nx, ny) => {
-      // lốm đốm xanh / vàng lá theo noise
-      const yel = sstep(0.5, 0.7, vnoise(x * 3.5, y * 3.5, z * 3.5, 9));
-      mix(col(0x2f7d31), col(0x6dbb45), ny * 0.5 + 0.4);
-      _c.lerp(col(0xb5b84a), yel * 0.55);
-      return _c;
-    });
+  b.add(tube([V(0, 0, 0), V(0, 0.25, 0)], [0.08, 0.06], 5), () => _c.setRGB(0.8, 0.75, 0.7)); // gốc nhỏ
+  const r = rngOf(71), cb = new CardBuilder(), crown = V(0, 0.5, 0);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + r();
+    const d = i === 0 ? 0 : 0.35 + r() * 0.25, s = 0.42 + r() * 0.22;
+    scatterCards(cb, r, V(Math.cos(a) * d, 0.42 + r() * 0.3, Math.sin(a) * d), s, 7, crown, 0.95, 1.5);
   }
-  return b.build();
+  return { wood: b.build(), leaves: cb.build(), leafTex: 'broad', bark: 'bark_brown_02' };
 }
 
 const PLANT_BUILDERS = { pine: buildPine, broadleaf: buildBroadleaf, palm: buildPalm, dead: buildDead, fern: buildFern, bush: buildBush };
@@ -414,7 +458,7 @@ function rockGeo(kind, seed) {
 // Dựng InstancedMesh cho dữ liệu cây/đá bất kỳ (preview dùng dữ liệu giả, game dùng getWorld())
 // ============================================================
 const CULL_DIST = 460; // m, phải lớn hơn khoảng cách sương kín (sky.js)
-const CHUNK = 120; // m. Chia cây/đá thành ô không gian để GPU bỏ qua ô ngoài tầm nhìn (trước đây vẽ cả đảo mỗi khung)
+const CHUNK = 160; // m. Chia cây/đá thành ô không gian để GPU bỏ qua ô ngoài tầm nhìn (trước đây vẽ cả đảo mỗi khung)
 function chunks(list) {
   const m = new Map();
   for (const it of list) {
@@ -430,17 +474,18 @@ export function createFloraFrom(scene, plants, rocks) {
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
 
-  // ---- Cây ----
+  // ---- Cây: mỗi loại 2 lớp instancing — gỗ (ảnh vỏ cây thật chiếu 3 phía) và lá (tấm cành lá cắt viền alpha) ----
+  const leafTexOf = { broad: () => broadLeafCluster(), needle: () => needleCluster(), palm: () => frondTexture(false), fern: () => frondTexture(true) };
   for (const kind of Object.keys(PLANT_BUILDERS)) {
     const list = plants.filter((p) => p.kind === kind);
     if (!list.length) continue;
-    const geo = PLANT_BUILDERS[kind]();
+    const parts = PLANT_BUILDERS[kind]();
     const [H, amp] = PLANT_WIND[kind];
-    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
-    // Gió: đung đưa đỉnh theo độ cao (càng cao càng lay), pha lệch theo vị trí từng cây
-    mat.onBeforeCompile = (sh) => {
+    // Gió: đung đưa đỉnh theo độ cao (càng cao càng lay), pha lệch theo vị trí từng cây; lá rung thêm
+    const wind = (flutter) => (sh) => {
       sh.uniforms.uTime = uTime;
-      sh.vertexShader = 'uniform float uTime;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      sh.vertexShader = 'uniform float uTime;\nvarying vec3 vOP; varying vec3 vON;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+        vOP = position; vON = normal;
         vec2 ip = vec2(0.0);
         #ifdef USE_INSTANCING
         ip = instanceMatrix[3].xz;
@@ -450,32 +495,85 @@ export function createFloraFrom(scene, plants, rocks) {
         float ph = uTime * 1.5 + ip.x * 0.35 + ip.y * 0.27;
         transformed.x += sin(ph + position.y * 0.3) * k;
         transformed.z += cos(ph * 0.8 + 1.3) * k * 0.7;
-        transformed.y += sin(ph * 2.3 + length(position.xz) * 2.0) * k * 0.15;`);
+        transformed.y += sin(ph * 2.3 + length(position.xz) * 2.0) * k * 0.15;
+        ${flutter ? 'transformed += normal * sin(uTime * 7.0 + dot(position, vec3(3.1, 2.3, 2.7))) * 0.035 * hh;' : ''}`);
     };
-    mat.customProgramCacheKey = () => 'flora-wind-' + kind;
+    // Gỗ: ảnh vỏ cây chiếu 3 phía theo toạ độ của cây (vỏ dính theo thân khi lay)
+    const bark = pbr(parts.bark);
+    const woodMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 });
+    woodMat.onBeforeCompile = (sh) => {
+      wind(false)(sh);
+      sh.uniforms.tBark = { value: bark.map };
+      sh.fragmentShader = 'uniform sampler2D tBark;\nvarying vec3 vOP; varying vec3 vON;\n' + sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+        vec3 bw = pow(abs(normalize(vON)), vec3(3.0)); bw /= (bw.x + bw.y + bw.z);
+        vec3 bk = texture2D(tBark, vOP.zy * vec2(1.4, 0.7)).rgb * bw.x + texture2D(tBark, vOP.xz * 1.4).rgb * bw.y + texture2D(tBark, vOP.xy * vec2(1.4, 0.7)).rgb * bw.z;
+        diffuseColor.rgb *= bk * 1.25;`);
+    };
+    woodMat.customProgramCacheKey = () => 'flora-wood-' + kind;
+    const woodDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    woodDepth.onBeforeCompile = wind(false);
+    woodDepth.customProgramCacheKey = () => 'flora-wood-depth-' + kind;
+    // Lá: ảnh cành lá có alpha; ánh sáng xuyên lá nhẹ (lá mỏng hơi sáng khi ngược nắng)
+    let leafMat = null, leafDepth = null;
+    if (parts.leaves) {
+      const lt = leafTexOf[parts.leafTex]();
+      leafMat = new THREE.MeshStandardMaterial({ map: lt, alphaTest: 0.45, side: THREE.DoubleSide, vertexColors: true, roughness: 0.75 });
+      leafMat.onBeforeCompile = (sh) => {
+        wind(true)(sh);
+        sh.vertexShader = 'varying float vViewZ;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n vViewZ = -mvPosition.z;');
+        sh.fragmentShader = 'varying vec3 vOP; varying vec3 vON; varying float vViewZ;\n' + sh.fragmentShader
+          // lá sát camera mờ dần (rải điểm), để camera không bị bụi/tán lá che kín tầm nhìn
+          .replace('#include <alphatest_fragment>', `#include <alphatest_fragment>
+            float nearFade = smoothstep(0.6, 2.2, vViewZ);
+            if (nearFade < 1.0 && fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) > nearFade) discard;`)
+          .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          totalEmissiveRadiance += diffuseColor.rgb * 0.06;`);
+      };
+      leafMat.customProgramCacheKey = () => 'flora-leaf-' + kind;
+      leafDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: lt, alphaTest: 0.45 });
+      leafDepth.onBeforeCompile = wind(true);
+      leafDepth.customProgramCacheKey = () => 'flora-leaf-depth-' + kind;
+    }
     for (const cl of chunks(list)) {
-    const mesh = new THREE.InstancedMesh(geo, mat, cl.length);
-    cl.forEach((p, i) => {
-      const h1 = hash3(p.x, p.z, 1), h2 = hash3(p.x, p.z, 2), h3 = hash3(p.x, p.z, 3);
-      dummy.position.set(p.x, p.y - 0.05, p.z);
-      dummy.rotation.set(0, p.rot, 0);
-      // co giãn ngang hơi khác dọc (±10%), xác định theo vị trí
-      dummy.scale.set(p.scale * (0.9 + h1 * 0.2), p.scale * (0.92 + h2 * 0.16), p.scale * (0.9 + h1 * 0.2));
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-      // sắc độ: ±10% sáng, ngả vàng/ xanh
-      const br = 0.9 + h3 * 0.2, yl = h2;
-      mesh.setColorAt(i, color.setRGB(br * (0.96 + yl * 0.14), br * (1.0 + (1 - yl) * 0.04), br * (0.9 + (1 - yl) * 0.1)));
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor.needsUpdate = true;
-    mesh.computeBoundingSphere(); mesh.boundingSphere.radius += 6; // chừa chỗ cho cây cao + gió lay
-    group.add(mesh);
+      const layers = [[parts.wood, woodMat, woodDepth]];
+      if (leafMat) layers.push([parts.leaves, leafMat, leafDepth]);
+      for (const [geo, mat, depthMat] of layers) {
+        const mesh = new THREE.InstancedMesh(geo, mat, cl.length);
+        mesh.castShadow = true; mesh.receiveShadow = true; mesh.customDepthMaterial = depthMat;
+        cl.forEach((p, i) => {
+          const h1 = hash3(p.x, p.z, 1), h2 = hash3(p.x, p.z, 2), h3 = hash3(p.x, p.z, 3);
+          dummy.position.set(p.x, p.y - 0.05, p.z);
+          dummy.rotation.set(0, p.rot, 0);
+          dummy.scale.set(p.scale * (0.9 + h1 * 0.2), p.scale * (0.92 + h2 * 0.16), p.scale * (0.9 + h1 * 0.2));
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+          // sắc độ từng cây: ±10% sáng, ngả vàng/xanh (lá); gỗ chỉ đổi độ sáng
+          const br = 0.9 + h3 * 0.2, yl = h2;
+          if (mat === leafMat) mesh.setColorAt(i, color.setRGB(br * (0.92 + yl * 0.16), br, br * (0.88 + (1 - yl) * 0.1)));
+          else mesh.setColorAt(i, color.setRGB(br, br, br));
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.instanceColor.needsUpdate = true;
+        mesh.computeBoundingSphere(); mesh.boundingSphere.radius += 6; // chừa chỗ cho cây cao + gió lay
+        group.add(mesh);
+      }
     }
   }
 
   // ---- Đá: mỗi (loại, biến thể seed) một InstancedMesh ----
-  const rockMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  // Đá: ảnh đá địa y thật chiếu 3 phía theo toạ độ của hòn đá, nhân màu đỉnh (rêu phía trên, sắc từng loại đá)
+  const rockTex = pbr('lichen_rock');
+  const rockMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+  rockMat.onBeforeCompile = (sh) => {
+    sh.uniforms.tRock = { value: rockTex.map };
+    sh.vertexShader = 'varying vec3 vOP; varying vec3 vON;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vOP = position; vON = normal;');
+    sh.fragmentShader = 'uniform sampler2D tRock;\nvarying vec3 vOP; varying vec3 vON;\n' + sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      vec3 fn = normalize(cross(dFdx(vOP), dFdy(vOP))); // pháp tuyến mặt (không phụ thuộc dữ liệu đỉnh)
+      vec3 bw = pow(abs(fn), vec3(3.0)); bw /= (bw.x + bw.y + bw.z + 1e-4);
+      vec3 rk = texture2D(tRock, vOP.zy * 0.9).rgb * bw.x + texture2D(tRock, vOP.xz * 0.9).rgb * bw.y + texture2D(tRock, vOP.xy * 0.9).rgb * bw.z;
+      diffuseColor.rgb *= rk * 19.0; // ảnh đá rất sẫm (~5% tuyến tính): chuẩn hoá về trung bình ~1, chỉ lấy chi tiết`);
+  };
+  rockMat.customProgramCacheKey = () => 'rock-triplanar';
   const rockCache = {};
   const buckets = new Map();
   for (const rk of rocks) {
@@ -489,6 +587,7 @@ export function createFloraFrom(scene, plants, rocks) {
     const geo = rockCache[key] || (rockCache[key] = rockGeo(kind, seed));
     for (const cl of chunks(list)) {
     const mesh = new THREE.InstancedMesh(geo, rockMat, cl.length);
+    mesh.castShadow = true; mesh.receiveShadow = true;
     cl.forEach((rk, i) => {
       const h1 = hash3(rk.x, rk.z, 5), h2 = hash3(rk.x, rk.z, 6);
       dummy.position.set(rk.x, rk.y - 0.12 * rk.hgt, rk.z); // chìm nhẹ xuống đất

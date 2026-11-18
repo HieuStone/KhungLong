@@ -23,12 +23,15 @@ const COLORS = {
   rabbit:  { body: 0xb9a48c, belly: 0xf1ebe0, ear: 0xe8b5b0, nose: 0xe58f98, leg: 0xa8927a },
   mouse:   { body: 0x8b8379, pink: 0xe6a5a8, leg: 0xc99f9c, tail: 0xd9a9a4 },
   bird:    { body: 0x2f86d6, wing: 0x1f5fa8, belly: 0xf6ecce, beak: 0xf19a1c, leg: 0xc77b1a },
+  lizard:  { body: 0x6b7438, belly: 0xc4b98a, stripe: 0x3c4220, leg: 0x5d6531 },
+  turtle:  { shell: 0x4f4128, rim: 0x7a6640, scute: 0x3a2f1c, skin: 0x7b8456, belly: 0xb9a676 },
+  boar:    { body: 0x4b3b2d, mane: 0x2a2019, snout: 0x7d5f52, tusk: 0xe6dcc4, hoof: 0x1d1712 },
 };
 function getMats(kind) {
   if (!matCache.has(kind)) {
     const out = {};
-    for (const [k, c] of Object.entries(COLORS[kind])) out[k] = new THREE.MeshStandardMaterial({ color: c, flatShading: true, roughness: 0.9 });
-    out.dark = new THREE.MeshStandardMaterial({ color: 0x0c0c0c, flatShading: true, roughness: 0.3 });
+    for (const [k, c] of Object.entries(COLORS[kind])) out[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.95 });
+    out.dark = new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.15 }); // mắt bóng
     matCache.set(kind, out);
   }
   return matCache.get(kind);
@@ -256,7 +259,139 @@ function buildBird(M) {
   };
 }
 
-const BUILDERS = { chicken: buildChicken, rabbit: buildRabbit, mouse: buildMouse, bird: buildBird };
+// Thằn lằn: bò sát chân xoè ngang, thân uốn lượn chữ S khi chạy, đuôi dài; idle thỉnh thoảng nhún "hít đất"
+function buildLizard(M) {
+  const B = new THREE.Group();
+  const trunk = pivot(B, 0, 0.07, 0);
+  ell(trunk, M.body, [0.085, 0.055, 0.21], [0, 0, 0]);
+  ell(trunk, M.belly, [0.07, 0.03, 0.18], [0, -0.03, 0]);
+  for (const z of [-0.12, -0.04, 0.04, 0.12]) ell(trunk, M.stripe, [0.06, 0.012, 0.025], [0, 0.05, z]); // vằn lưng
+  const head = pivot(trunk, 0, 0.01, -0.2);
+  ell(head, M.body, [0.055, 0.035, 0.09], [0, 0, -0.06]);
+  ell(head, M.belly, [0.045, 0.02, 0.07], [0, -0.02, -0.06]);
+  for (const s of [-1, 1]) ell(head, M.dark, [0.014, 0.014, 0.014], [s * 0.042, 0.015, -0.06]);
+  const tail = []; let par = pivot(trunk, 0, 0, 0.19);
+  for (let i = 0; i < 6; i++) {
+    if (i > 0) par = pivot(par, 0, 0, 0.09);
+    const m = new THREE.Mesh(CYLZ, i % 2 ? M.stripe : M.body);
+    const rr = lerp(0.045, 0.008, i / 5);
+    m.scale.set(rr, rr * 0.8, 0.095); par.add(m); tail.push(par);
+  }
+  const legs = [];
+  for (const s of [-1, 1]) for (const z of [-0.12, 0.12]) {
+    const hp = pivot(trunk, s * 0.07, -0.01, z); hp.userData = { s, k: (s > 0) === (z > 0) ? 0 : 1 };
+    const up = limb(hp, M.leg, 0.018, 0.08); up.rotation.z = s * 1.2;            // đùi xoè ngang
+    ell(hp, M.leg, [0.03, 0.01, 0.035], [s * 0.075, -0.055, -0.01]);             // bàn chân
+    legs.push(hp);
+  }
+  return {
+    body: B, len: 1.12, deadY: 0.1, flip: PI,
+    tick({ t, ph, w }) {
+      const gait = w.walk + w.run;
+      const und = sin(ph * 1.4) * (0.18 * w.walk + 0.32 * w.run);               // uốn lượn thân
+      trunk.rotation.y = und;
+      head.rotation.y = -und * 1.2 + sin(t * 1.3) * 0.3 * w.idle;
+      for (let i = 0; i < tail.length; i++) tail[i].rotation.y = sin(ph * 1.4 - i * 0.7) * (0.25 * gait) + sin(t * 1.1 - i * 0.5) * 0.08 * w.idle;
+      for (const l of legs) l.rotation.y = sin(ph * 1.4 + l.userData.k * PI) * (0.5 * w.walk + 0.8 * w.run) * l.userData.s;
+      const push = Math.max(0, sin(t * 2.6)) ** 6 * w.idle;                       // hít đất
+      trunk.position.y = 0.07 + push * 0.03;
+      head.rotation.x = -push * 0.3 - w.run * 0.1;
+      B.position.y = w.dead * 0.1;
+      B.rotation.z = w.dead * PI;
+    },
+  };
+}
+
+// Rùa: mai gồ có vảy, bò chậm; anim 'run' (server gửi khi rùa trốn) = rụt đầu và chân vào mai
+function buildTurtle(M) {
+  const B = new THREE.Group();
+  const shell = pivot(B, 0, 0.12, 0);
+  ell(shell, M.shell, [0.25, 0.13, 0.31], [0, 0.03, 0]);
+  ell(shell, M.rim, [0.27, 0.035, 0.32], [0, -0.02, 0]);
+  ell(shell, M.belly, [0.23, 0.04, 0.28], [0, -0.05, 0]);
+  for (const [x, z] of [[0, -0.14], [0, 0], [0, 0.14], [-0.13, -0.07], [0.13, -0.07], [-0.13, 0.08], [0.13, 0.08]]) {
+    const sc = ell(shell, M.scute, [0.075, 0.03, 0.07], [x, 0.13 - Math.abs(x) * 0.45 - Math.abs(z) * 0.2, z]); // vảy mai
+    sc.rotation.z = -x * 2.2; sc.rotation.x = z * 1.6;
+  }
+  const head = pivot(shell, 0, -0.01, -0.3);
+  ell(head, M.skin, [0.045, 0.045, 0.08], [0, 0, -0.03]);                          // cổ
+  ell(head, M.skin, [0.055, 0.05, 0.075], [0, 0.015, -0.1]);
+  for (const s of [-1, 1]) ell(head, M.dark, [0.012, 0.012, 0.012], [s * 0.045, 0.03, -0.13]);
+  const legs = [];
+  for (const s of [-1, 1]) for (const z of [-0.2, 0.19]) {
+    const p = pivot(shell, s * 0.2, -0.05, z); p.userData = { s, k: (s > 0) === (z > 0) ? 0 : 1 };
+    ell(p, M.skin, [0.055, 0.065, 0.06], [s * 0.02, -0.04, 0]); legs.push(p);
+  }
+  cone(shell, M.skin, 0.025, 0.07, [0, -0.02, 0.31], [PI / 2, 0, 0]);             // đuôi
+  return {
+    body: B, len: 0.82, deadY: 0.2, flip: PI,
+    tick({ t, ph, w }) {
+      const hide = w.run;
+      head.position.z = lerp(-0.3, -0.2, hide);
+      head.scale.setScalar(1 - hide * 0.35);
+      head.rotation.x = sin(t * 0.8) * 0.1 * w.idle + sin(ph * 0.8) * 0.06 * w.walk;
+      head.rotation.y = sin(t * 0.5) * 0.35 * w.idle;
+      for (const l of legs) {
+        l.rotation.x = sin(ph * 0.8 + l.userData.k * PI) * 0.45 * w.walk;
+        l.scale.setScalar(1 - hide * 0.55);
+      }
+      shell.position.y = 0.12 - hide * 0.05 + abs(sin(ph * 0.8)) * 0.01 * w.walk;
+      shell.rotation.z = sin(ph * 0.8) * 0.03 * w.walk;
+      B.position.y = w.dead * 0.2;
+      B.rotation.z = w.dead * PI; // lật ngửa
+    },
+  };
+}
+
+// Lợn rừng: thân chắc, vai cao, bờm gáy sẫm, nanh cong; idle cúi ủi đất, chạy phi nước đại
+function buildBoar(M) {
+  const B = new THREE.Group();
+  const trunk = pivot(B, 0, 0.43, 0);
+  ell(trunk, M.body, [0.2, 0.23, 0.44], [0, 0, 0.02]);
+  ell(trunk, M.body, [0.21, 0.25, 0.22], [0, 0.03, -0.18]);                       // vai cao
+  ell(trunk, M.mane, [0.07, 0.09, 0.32], [0, 0.2, -0.1]);                          // bờm gáy
+  const head = pivot(trunk, 0, 0.02, -0.38);
+  ell(head, M.body, [0.14, 0.15, 0.19], [0, 0, -0.06]);
+  ell(head, M.body, [0.08, 0.075, 0.13], [0, -0.06, -0.24]);                       // mõm
+  ell(head, M.snout, [0.065, 0.055, 0.02], [0, -0.06, -0.37]);                     // đĩa mũi
+  for (const s of [-1, 1]) {
+    cone(head, M.tusk, 0.014, 0.08, [s * 0.065, -0.1, -0.29], [-0.5, 0, s * 0.5]); // nanh
+    ell(head, M.dark, [0.018, 0.018, 0.018], [s * 0.1, 0.05, -0.14]);
+    cone(head, M.mane, 0.045, 0.09, [s * 0.08, 0.14, 0.02], [-0.3, 0, -s * 0.35]); // tai
+  }
+  const legs = [];
+  for (const s of [-1, 1]) for (const z of [-0.26, 0.28]) {
+    const p = pivot(trunk, s * 0.12, -0.14, z); p.userData = { s, k: (s > 0) === (z > 0) ? 0 : 1, front: z < 0 };
+    limb(p, M.body, 0.055, 0.17);
+    const low = pivot(p, 0, -0.17, 0);
+    limb(low, M.mane, 0.035, 0.12);
+    ell(low, M.hoof, [0.038, 0.025, 0.045], [0, -0.13, -0.01]);
+    p.userData.low = low; legs.push(p);
+  }
+  const tail = pivot(trunk, 0, 0.12, 0.45);
+  limb(tail, M.mane, 0.012, 0.14).rotation.x = 0.2;
+  return {
+    body: B, len: 1.24, deadY: 0.24, flip: PI / 2,
+    tick({ t, ph, w }) {
+      const gait = w.walk + w.run;
+      for (const l of legs) {
+        // đi: chéo cặp; chạy: phi nước đại (hai chân trước gần cùng pha, hai chân sau lệch nửa nhịp)
+        const phase = w.run > 0.5 ? (l.userData.front ? 0 : PI * 0.9) + (l.userData.s > 0 ? 0.3 : 0) : l.userData.k * PI;
+        l.rotation.x = sin(ph + phase) * (0.45 * w.walk + 0.8 * w.run) + w.dead * 0.6;
+        l.userData.low.rotation.x = Math.max(0, -cos(ph + phase)) * (0.5 * gait) - w.dead * 0.3;
+      }
+      trunk.position.y = 0.43 + abs(sin(ph)) * (0.01 * w.walk + 0.05 * w.run);
+      trunk.rotation.x = sin(ph) * 0.07 * w.run;
+      const root = Math.max(0, sin(t * 0.9)) ** 2 * w.idle;                         // ủi đất
+      head.rotation.x = root * 0.75 + sin(t * 9) * 0.06 * root + sin(ph * 2) * 0.05 * gait - w.run * 0.1;
+      tail.rotation.z = sin(t * 7) * 0.4 * (w.idle + w.walk);
+      B.position.y = w.dead * 0.24;
+      B.rotation.z = w.dead * (PI / 2);
+    },
+  };
+}
+
+const BUILDERS = { chicken: buildChicken, rabbit: buildRabbit, mouse: buildMouse, bird: buildBird, lizard: buildLizard, turtle: buildTurtle, boar: buildBoar };
 const ANIMS = ['idle', 'walk', 'run', 'fly', 'dead'];
 
 export function createAnimal(kind) {
@@ -270,6 +405,7 @@ export function createAnimal(kind) {
   root.scale.setScalar(NPC_KINDS[kind].bodyLength / spec.len);
   root.add(spec.body);
   group.userData.kind = kind;
+  group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
 
   const w = { idle: 1, walk: 0, run: 0, fly: 0, dead: 0 };
   let t = Math.random() * 100, ph = 0, fl = 0, fq = 5;
