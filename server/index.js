@@ -9,16 +9,25 @@ import { createVitals, stepVitals, eat, drink, stageStats, applyDamage } from '.
 import { createNpcs } from './game/npcs.js';
 import { createCarcasses } from './game/carcasses.js';
 import { createBots } from './game/bots.js';
+import { createQuestState, questEvent, questView } from './game/quests.js';
 import { CONFIG } from './game.config.js';
 
 const NEAR_WATER = 2.5;     // độ cao <= WATER_LEVEL + NEAR_WATER thì coi là ở bờ nước, uống được
-const AOI = 160;            // chỉ gửi NPC trong bán kính này quanh người chơi
+const AOI = 120;            // chỉ gửi con mồi NPC / xác trong bán kính này quanh người chơi (con nhỏ ở xa hơn không nhìn thấy)
+const PLAYER_AOI = 300;     // chỉ gửi khủng long trong bán kính này (xa hơn đã chìm trong sương mù)
+// Làm tròn số trước khi gửi: JSON của số thực đầy đủ (vd -177.17950097554797) tốn gấp 3-4 lần cần thiết
+const r2 = (v) => Math.round(v * 100) / 100;   // cm
+const r3 = (v) => Math.round(v * 1000) / 1000; // góc
 const ATTACK_ARC = 0.5;     // cos(60 độ): đòn đánh trúng trong nón 120 độ phía trước
 const ATTACK_ANIM = 0.45;   // giây hiển thị animation tấn công
 
-const wss = new WebSocketServer({ port: SERVER_PORT });
+// Nén permessage-deflate: snapshot JSON lặp lại nhiều nên nén được ~3-5 lần. Mức nén thấp cho nhẹ CPU.
+const wss = new WebSocketServer({
+  port: SERVER_PORT,
+  perMessageDeflate: { zlibDeflateOptions: { level: 3, memLevel: 8 }, threshold: 512, concurrencyLimit: 16 },
+});
 const players = new Map(); // id -> player
-const npcs = createNpcs(WORLD_SEED);
+const npcs = createNpcs(WORLD_SEED, CONFIG.prey?.counts);
 const carcasses = createCarcasses(CONFIG.carcass);
 let nextId = 1;
 let tick = 0;
@@ -47,6 +56,17 @@ const notify = (p, msg) => {
   p.lastNotice = now;
   p.ws.send(encode({ t: S2C.NOTICE, msg }));
 };
+
+/** Sự kiện nhiệm vụ (chỉ người chơi thật): nhiệm vụ nào vừa xong thì thưởng độ lớn + hồi máu và báo cho người chơi. */
+function quest(p, type, data) {
+  if (!p || p.isBot || !p.quests) return;
+  for (const q of questEvent(p.quests, type, data)) {
+    const v = p.vitals, rw = q.def.reward || {};
+    v.growth = Math.min(1, v.growth + (rw.growth || 0));
+    v.hp = Math.min(v.maxHp, v.hp + (rw.heal || 0) * v.maxHp);
+    if (p.ws.readyState === 1) p.ws.send(encode({ t: S2C.NOTICE, msg: `✔ Hoàn thành nhiệm vụ: ${q.def.title} (+${Math.round((rw.growth || 0) * 100)}% lớn)`, quest: q.def.id }));
+  }
+}
 
 const FULL = 0.98; // đói/khát từ mức này trở lên coi như đầy, không ăn/uống thêm được
 const dirTo = (p, x, z) => { const d = Math.hypot(x - p.x, z - p.z) || 1; return yawOfDirection((x - p.x) / d, (z - p.z) / d); };
@@ -115,6 +135,7 @@ function biteCarcass(p) {
   p.heading = dirTo(p, n.x, n.z); // quay mặt về phía xác
   const b = carcasses.bite(n, 0.06, 1 - p.vitals.hunger);
   eat(p.vitals, p.species, b.gain);
+  quest(p, 'eat_meat', { type: n.type });
   if (b.poisoned) { p.poisonT = CONFIG.carcass.poisonSeconds; notify(p, 'Thịt đã thối rữa! Bạn bị ngộ độc'); }
   else if (carcasses.rot01(n) > 0.4) notify(p, 'Thịt bắt đầu thối, ăn không còn bổ như trước');
   startFeeding(p, 'eat', 0.4);
@@ -159,10 +180,12 @@ function doAttack(p, kind) {
     const n = best.target, res = npcs.damage(n, dmg, p.x, p.z);
     emit('bite', n.x, n.z, { size: sizeOf(p), victim: n.kind });
     emit(res.killed ? 'npc_die' : 'npc_hurt', n.x, n.z, { victim: n.kind });
+    if (res.killed) quest(p, 'kill_prey', { kind: n.kind });
     if (res.killed) carcasses.add({ type: 'npc', kind: res.corpse.kind, x: res.corpse.x, y: groundAt(res.corpse.x, res.corpse.z), z: res.corpse.z, yaw: res.corpse.yaw });
   } else {
     const o = best.target;
     applyDamage(o.vitals, dmg, atk.bleed); o.lastHitBy = p.name; o.lastAttackerId = p.id; o.lastHitAge = o.age;
+    quest(p, 'hit_dino', { diet: SPECIES[o.species].diet, species: o.species });
     emit('bite', o.x, o.z, { size: sizeOf(p), victim: 'dino' });
     emit('player_hurt', o.x, o.z, { species: o.species });
   }
@@ -181,22 +204,30 @@ function doInteract(p) {
   const sp = SPECIES[p.species];
   const v = p.vitals;
 
-  if (waterInReach(p)) {
-    if (v.thirst >= FULL) { notify(p, 'Bạn đã uống đủ nước'); return; }
+  // Có cả nước lẫn đồ ăn trong tầm: ưu tiên cái đang thiếu hơn. Trước đây luôn ưu tiên nước, nên đứng cạnh xác/bụi cây
+  // ở mép nước mà đã uống đủ thì chỉ nhận thông báo "đã uống đủ" và không bao giờ ăn được (NPC chết đói ngay bên bờ).
+  const water = waterInReach(p);
+  const carn = sp.diet === 'carnivore';
+  const f = facing(p.heading), r = bodyRadius(p.species, p.stage);
+  const plant = carn ? null : getWorld().nearEdible(p.x + f.x * (r + 0.5), p.z + f.z * (r + 0.5), sizeOf(p) * 0.5 + 2.8);
+  const food = carn ? !!carcassInReach(p) : !!plant;
+  const hungry = v.hunger < FULL;
+  if (water && v.thirst < FULL && !(food && hungry && v.hunger < v.thirst)) {
     drink(v, 0.06);
+    quest(p, 'drink');
     startFeeding(p, 'drink', 0.35);
     return;
   }
-  if (sp.diet === 'carnivore') {
-    if (!biteCarcass(p)) notify(p, 'Không có xác nào ở gần (hạ một con mồi rồi đứng sát xác) và không có nước phía trước');
+  if (carn) {
+    if (biteCarcass(p)) return;
+    notify(p, water ? 'Bạn đã uống đủ nước' : 'Không có xác nào ở gần (hạ một con mồi rồi đứng sát xác) và không có nước phía trước');
     return;
   }
-  const f = facing(p.heading), r = bodyRadius(p.species, p.stage);
-  const plant = getWorld().nearEdible(p.x + f.x * (r + 0.5), p.z + f.z * (r + 0.5), sizeOf(p) * 0.5 + 2.8);
-  if (!plant) { notify(p, 'Không có dương xỉ hay bụi cây để gặm ở gần và không có nước phía trước'); return; }
+  if (!plant) { notify(p, water ? 'Bạn đã uống đủ nước' : 'Không có dương xỉ hay bụi cây để gặm ở gần và không có nước phía trước'); return; }
   if (v.hunger >= FULL) { notify(p, 'Bạn đã no, không ăn thêm được'); return; }
   p.heading = dirTo(p, plant.x, plant.z);
   eat(v, p.species, 0.03);
+  quest(p, 'eat_plant');
   startFeeding(p, 'eat', 0.4);
 }
 
@@ -207,6 +238,11 @@ function doRoar(p) {
   const size = sizeOf(p);
   npcs.scare(p.x, p.z, 30 + size * 5);
   emit('roar', p.x, p.z, { species: p.species, size, y: p.y });
+  if (!p.isBot) {
+    let audience = 0;
+    for (const o of players.values()) if (o !== p && Math.hypot(o.x - p.x, o.z - p.z) < 50) audience++;
+    quest(p, 'roar', { audience });
+  }
 }
 
 // Khủng long NPC (AI) dùng đúng các hành động của người chơi ở trên
@@ -235,6 +271,7 @@ wss.on('connection', (ws) => {
         attackCd: 0, attackT: 0, lastHitBy: null, actT: 0, actCd: 0, actKind: null, lastNotice: 0,
         flying: false, fy: 0, vy: 0, flyLock: false, roarCd: 0,
         age: 0, carrying: null, carryMult: 1, poisonT: 0, lastAttackerId: null, lastHitAge: -99,
+        quests: createQuestState(m.species), threatened: false,
       });
       ws.send(encode({ t: S2C.WELCOME, id, seed: WORLD_SEED, tickRate: TICK_RATE }));
     } else if (m.t === C2S.INPUT && p) {
@@ -250,12 +287,25 @@ wss.on('connection', (ws) => {
 });
 
 const tickStat = { max: 0, sum: 0, n: 0, slow: 0 }; // đo thời gian mỗi tick (xem khi ISLE_DEBUG=1)
-setInterval(() => {
-  const t0 = process.hrtime.bigint();
-  gameTick();
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  tickStat.sum += ms; tickStat.n++; if (ms > tickStat.max) tickStat.max = ms; if (ms > 1000 / TICK_RATE) tickStat.slow++;
-}, 1000 / TICK_RATE);
+// ISLE_SPEED=n (chỉ dùng khi kiểm thử): chạy n tick mỗi nhịp để tua nhanh thời gian
+const SPEED = Math.max(1, Math.floor(+process.env.ISLE_SPEED || 1));
+// Vòng lặp tick tự bù trễ: setInterval(50ms) trên Windows bị làm tròn theo bước đồng hồ ~15.6ms thành ~62ms
+// (chỉ ~16 tick/giây, game chạy chậm và giật nhịp). Ở đây hẹn giờ theo mốc tuyệt đối và chạy bù tick bị trễ.
+const TICK_MS = 1000 / TICK_RATE;
+let nextTickAt = performance.now();
+function tickLoop() {
+  let n = 0;
+  while (performance.now() >= nextTickAt && n < 5) { // tối đa 5 tick bù mỗi lần (tránh dồn khi server bị treo lâu)
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < SPEED; i++) gameTick();
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    tickStat.sum += ms; tickStat.n++; if (ms > tickStat.max) tickStat.max = ms; if (ms > TICK_MS) tickStat.slow++;
+    nextTickAt += TICK_MS; n++;
+  }
+  if (performance.now() - nextTickAt > TICK_MS * 5) nextTickAt = performance.now(); // trễ quá nhiều: bỏ qua, không cố đuổi
+  setTimeout(tickLoop, Math.max(0, nextTickAt - performance.now() - 1));
+}
+tickLoop();
 
 function gameTick() {
   tick++;
@@ -263,6 +313,7 @@ function gameTick() {
   for (const p of [...players.values()]) {
     const v = p.vitals;
     p.age += TICK_DT;
+    const px0 = p.x, pz0 = p.z;
     const { mx, mz, yaw } = p.input;
     p.attackCd = Math.max(0, p.attackCd - TICK_DT);
     p.attackT = Math.max(0, p.attackT - TICK_DT);
@@ -371,7 +422,25 @@ function gameTick() {
     p.canSprint = res.canSprint;
     p.anim = v.sleeping ? 'sleep' : p.attackT > 0 ? 'attack' : feeding ? p.actKind
       : p.flying ? (flapping ? 'fly' : 'glide') : moving ? (sprinting ? 'run' : 'walk') : 'idle';
+    if (!p.isBot && p.quests) {
+      const dist = Math.hypot(p.x - px0, p.z - pz0);
+      if (dist > 0.001) quest(p, 'move', { dist, sprint: sprintingNow, fly: p.flying });
+      if (p.flying) quest(p, 'altitude', { alt: p.fy - groundAt(p.x, p.z) });
+      quest(p, 'survive', { sec: TICK_DT });
+      // Thoát hiểm: bị thú ăn thịt to hơn áp sát (< 15 m) rồi bỏ xa được (> 50 m)
+      if ((tick & 3) === 0) {
+        let nearest = Infinity;
+        for (const o of players.values()) {
+          if (o === p || SPECIES[o.species].diet !== 'carnivore' || sizeOf(o) <= sizeOf(p)) continue;
+          nearest = Math.min(nearest, Math.hypot(o.x - p.x, o.z - p.z));
+        }
+        if (nearest < 15) p.threatened = true;
+        else if (p.threatened && nearest > 50) { p.threatened = false; quest(p, 'escape'); }
+      }
+    }
     if (res.dead || v.hp <= 0) {
+      // Kẻ hạ gục (đánh trúng trong 20 giây gần nhất) được tính nhiệm vụ "hạ khủng long"
+      if (p.lastAttackerId != null && p.age - (p.lastHitAge ?? -99) < 20) quest(players.get(p.lastAttackerId), 'kill_dino', { species: p.species });
       let cause = v.hunger === 0 || v.thirst === 0 ? 'starvation' : p.poisonT > 0 ? 'poison' : 'wounds';
       if (p.lastHitBy) cause = 'killed';
       if (p.ws.readyState === 1) p.ws.send(encode({ t: S2C.DEAD, cause, by: p.lastHitBy }));
@@ -379,6 +448,10 @@ function gameTick() {
       // Để lại xác (kể cả xác người chơi): ăn được, tha được, thối rữa rồi biến mất
       carcasses.add({ type: 'dino', kind: p.species, stage: p.stage, x: p.x, y: groundAt(p.x, p.z), z: p.z, yaw: p.heading, name: p.name, colors: p.colors || null });
       emit('player_die', p.x, p.z, { species: p.species, size: sizeOf(p) });
+      if (process.env.ISLE_DEBUG) {
+        const depth = WATER_LEVEL - heightAt(p.x, p.z);
+        console.log('[death]', JSON.stringify({ who: p.name, stage: p.stage, cause, by: p.lastHitBy, water: depth > 0 ? +depth.toFixed(2) : 0, ai: p.ai?.state, hunger: +v.hunger.toFixed(2), thirst: +v.thirst.toFixed(2) }));
+      }
       players.delete(p.id);
       if (p.isBot) bots.onDeath(p);
     }
@@ -400,18 +473,36 @@ function gameTick() {
   npcs.step(TICK_DT, all);
   carcasses.step(TICK_DT);
 
-  const list = all.map((p) => ({
-    id: p.id, name: p.name, species: p.species, stage: p.stage,
-    x: p.x, y: p.y, z: p.z, yaw: p.yaw, hp01: p.vitals.hp / p.vitals.maxHp, anim: p.anim,
-    fly: p.flying, alt: p.flying ? p.fy - groundAt(p.x, p.z) : 0, colors: p.colors || null,
-  }));
+  // Phần động của mỗi khủng long (dùng chung cho mọi người nhận). Phần tĩnh (tên, loài, màu) chỉ gửi khi người nhận
+  // mới thấy con đó lần đầu (client chỉ cần chúng lúc tạo mô hình) -> snapshot nhỏ đi nhiều.
+  const dyn = new Map();
+  for (const p of all) {
+    const d = { id: p.id, stage: p.stage, x: r2(p.x), y: r2(p.y), z: r2(p.z), yaw: r3(p.yaw), hp01: r2(p.vitals.hp / p.vitals.maxHp), anim: p.anim };
+    if (p.flying) { d.fly = true; d.alt = r2(p.fy - groundAt(p.x, p.z)); } // mặc định (không gửi): fly=false, alt=0
+    dyn.set(p.id, d);
+  }
+  const fullOf = (p) => ({ ...dyn.get(p.id), name: p.name, species: p.species, colors: p.colors || null });
   for (const p of all) {
     if (p.isBot) continue; // NPC không có kết nối để gửi
+    // Chỉ khủng long trong tầm nhìn (luôn gồm chính mình)
+    const known = p.known || (p.known = new Set());
+    const sent = new Set();
+    const list = [];
+    for (const o of all) {
+      if (o !== p) {
+        const dx = o.x - p.x, dz = o.z - p.z;
+        if (dx * dx + dz * dz > PLAYER_AOI * PLAYER_AOI) continue;
+      }
+      list.push(known.has(o.id) ? dyn.get(o.id) : fullOf(o));
+      sent.add(o.id);
+    }
+    p.known = sent; // ra khỏi tầm rồi quay lại thì gửi lại phần tĩnh
     const v = p.vitals;
     const you = {
       hp: v.hp, maxHp: v.maxHp, hunger: v.hunger, thirst: v.thirst, stamina: v.stamina,
       growth01: v.growth, bleeding: v.bleed > 0, flying: p.flying, alt: p.flying ? p.fy - groundAt(p.x, p.z) : 0, carrying: p.carrying != null, poisoned: p.poisonT > 0,
     };
+    if (p.quests && (p.quests.dirty || (tick % 40) === 0)) { you.q = questView(p.quests); p.quests.dirty = false; } // tiến độ nhiệm vụ (khi đổi, và 2 s/lần)
     const visible = npcs.near(p.x, p.z, AOI).map(npcs.view);
     const ev = events.filter((e) => Math.abs(e.x - p.x) < 140 && Math.abs(e.z - p.z) < 140);
     if (p.ws.readyState === 1) p.ws.send(encode({ t: S2C.SNAPSHOT, tick, ack: p.ack, players: list, npcs: visible, carcasses: carcasses.near(p.x, p.z, AOI).map(carcasses.view), ev, you }));

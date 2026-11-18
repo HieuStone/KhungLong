@@ -5,7 +5,7 @@ import { BASELINE as DEFAULT_CONFIG } from './test-baseline.config.js'; // cấu
 import { createNpcs } from './npcs.js';
 import { createCarcasses } from './carcasses.js';
 import { createVitals } from './survival.js';
-import { createBots, targetWeight, chooseTarget, findThreat, growthCap, sizeOf, route } from './bots.js';
+import { createBots, targetWeight, chooseTarget, findThreat, growthCap, sizeOf, route, fleeThreshold, fleePoint } from './bots.js';
 
 const cfgWith = (over) => deepMerge(DEFAULT_CONFIG, over);
 
@@ -292,5 +292,31 @@ describe('tìm đường: đảo và cầu', () => {
     const p = creature('dryosaurus', 'adult', 50, 0);
     expect(chooseTarget(b, { creatures: [b, p], npcs: [], reachable: () => false }, cfg, 0, () => 0)).toBeNull();
     expect(chooseTarget(b, { creatures: [b, p], npcs: [], reachable: () => true }, cfg, 0, () => 0)).not.toBeNull();
+  });
+});
+
+describe('đánh nhau tới cùng trên cạn', () => {
+  it('ngang cỡ thì đánh tới gần chết, gặp con to hơn hẳn thì chạy sớm', () => {
+    const a = creature('utahraptor', 'adult', 0, 0), b = creature('utahraptor', 'adult', 5, 0);
+    const rex = creature('tyrannosaurus', 'adult', 5, 0);
+    expect(fleeThreshold(a, b)).toBeLessThan(0.1);
+    expect(fleeThreshold(a, rex)).toBeGreaterThanOrEqual(0.3);
+  });
+  it('chạy trốn ưu tiên đất liền, không lao xuống nước', () => {
+    // tìm một điểm trên cạn sát bờ: phía "xa kẻ thù" trực tiếp là nước
+    let spot = null;
+    for (let x = -480; x < 480 && !spot; x += 7) for (let z = -480; z < 480 && !spot; z += 7) {
+      if (heightAt(x, z) < 2 || heightAt(x, z) > 6) continue;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        if (heightAt(x + Math.cos(a) * 25, z + Math.sin(a) * 25) < -1 && heightAt(x - Math.cos(a) * 25, z - Math.sin(a) * 25) > 1) { spot = { x, z, a }; break; }
+      }
+    }
+    expect(spot).not.toBeNull();
+    const bot = creature('dryosaurus', 'adult', spot.x, spot.z);
+    const enemy = { x: spot.x - Math.cos(spot.a) * 6, z: spot.z - Math.sin(spot.a) * 6 }; // kẻ thù đứng phía đất liền
+    const p = fleePoint(bot, enemy);
+    expect(heightAt(p.x, p.z)).toBeGreaterThan(0);                              // điểm đến trên cạn
+    expect(Math.hypot(p.x - enemy.x, p.z - enemy.z)).toBeGreaterThan(6);         // vẫn rời xa kẻ thù
   });
 });

@@ -3,11 +3,11 @@ import * as THREE from 'three';
 // Màu mặc định của từng loài (khớp với màu trong dino.js / pterosaur.js): thân và điểm nhấn.
 // "Điểm nhấn" là các chi tiết như bàn chân, sọc, gờ mày, mề đay Triceratops, mào Pteranodon...
 export const DEFAULT_COLORS = {
-  tyrannosaurus: { body: '#5b6b3a', accent: '#3c4727' },
-  utahraptor: { body: '#c2662b', accent: '#3a2615' },
-  triceratops: { body: '#6c7d88', accent: '#8b5a48' },
-  dryosaurus: { body: '#b99a5e', accent: '#8a6c38' },
-  pteranodon: { body: '#6f8796', accent: '#e0612a' },
+  tyrannosaurus: { body: '#4d5234', accent: '#2f3322' },
+  utahraptor: { body: '#7a5634', accent: '#2e2318' },
+  triceratops: { body: '#8a4a26', accent: '#c89a48' },
+  dryosaurus: { body: '#8a7550', accent: '#5e4a2e' },
+  pteranodon: { body: '#5b544c', accent: '#a8442a' },
 };
 
 // Bảng màu thân gợi ý (bấm để chọn nhanh); màu điểm nhấn tự sinh ra từ màu thân nhưng vẫn chỉnh riêng được.
@@ -53,5 +53,5 @@ export function recolor(group, pairs) {
 
 /** Bụng sáng hơn màu thân (như bản gốc: bụng nhạt hơn lưng). */
 export function bellyOf(bodyHex) {
-  return '#' + new THREE.Color(bodyHex).lerp(new THREE.Color(0xffffff), 0.42).getHexString();
+  return '#' + new THREE.Color(bodyHex).lerp(new THREE.Color(0xffffff), 0.22).getHexString();
 }

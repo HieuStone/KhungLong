@@ -4,8 +4,9 @@ import { SPECIES, STAGE_SCALE, GROWTH_STAGES } from '@isle/shared';
 
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 
-// Tốc độ tối đa của chặng lớn (cùng công thức với server/index.js)
-const speedFactor = (scale) => 0.5 + 0.5 * scale;
+// Tốc độ theo chặng lớn: tỉ lệ căn bậc hai kích thước (quy luật Froude: con vật nhỏ bước nhanh hơn nhưng
+// tốc độ không giảm tuyến tính theo cỡ). Con non 1/4 cỡ -> 1/2 tốc độ; trước đây 0.5+0.5*scale (=0.625) làm chân guồng quá nhanh.
+const speedFactor = (scale) => Math.sqrt(scale);
 
 // Chặng lớn theo tiến độ growth (0..1): mốc 0 / 0.25 / 0.5 / 0.75
 export function stageOf(growth) {

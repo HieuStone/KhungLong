@@ -30,5 +30,8 @@ export function heightAt(x, z, seed = WORLD_SEED) {
   h = h / norm;                        // 0..1
   const edge = Math.max(Math.abs(x), Math.abs(z)) / WORLD_HALF;
   const falloff = Math.max(0, edge - 0.75) / 0.25; // đảo: biển ở rìa
-  return (h - 0.42) * 60 - falloff * falloff * 40;
+  const y = (h - 0.42) * 60 - falloff * falloff * 40;
+  // Biển sâu: chỉ phần dưới mực nước bị kéo sâu thêm (bờ và đảo giữ nguyên hình dạng).
+  // Sát bờ vẫn nông (lội/uống nước được), càng ra xa càng dốc sâu: -1 m -> -1.5 m, -5 m -> -11 m, -20 m -> -55 m.
+  return y >= 0 ? y : -Math.pow(-y, 1.3) * 1.5;
 }

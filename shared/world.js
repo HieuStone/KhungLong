@@ -44,8 +44,8 @@ function pick(rng, table) { // table: [[kind, weight], ...]
 }
 
 // ---------------- Cầu nối hai đảo lớn nhất ----------------
-export const BRIDGE_HALF_WIDTH = 3.0;  // nửa bề rộng mặt cầu (m)
-const BRIDGE_ARCH = 2.4;               // độ vồng giữa cầu (m)
+export const BRIDGE_HALF_WIDTH = 25.0; // nửa bề rộng mặt cầu (m) — đại lộ cầu thép rộng 50 m
+const BRIDGE_ARCH = 5.0;               // độ vồng mặt cầu ở giữa (m)
 // Cột chắn lan can đặt dày (0.7 m, r = 0.28) để thành một hàng rào liền: con nhỏ nhất cũng không lách qua được.
 // Phần hình ảnh chỉ vẽ cột thưa hơn (cứ 3 vật cản vẽ 1 cột) cùng thanh ngang liên tục.
 export const POST_SPACING = 0.7;

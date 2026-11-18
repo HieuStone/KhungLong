@@ -6,6 +6,17 @@ import { createTerrain } from './render/terrain.js';
 import { createFlora } from './render/flora.js';
 import { createBridge } from './render/bridge.js';
 import { createSky } from './render/sky.js';
+import { createGrade } from './render/grade.js';
+import { createTouchControls, isTouchDevice, requestFull } from './touch.js';
+import { setMaxAnisotropy } from './render/pbr.js';
+import { createFx } from './render/fx.js';
+import { createQuestPanel } from './quests-ui.js';
+
+// Thiết bị cảm ứng (điện thoại/tablet) và mức chất lượng đồ hoạ. ?q=low|high để ép; mặc định điện thoại = low.
+const TOUCH = isTouchDevice();
+const QUALITY = new URLSearchParams(location.search).get('q') || (TOUCH ? 'low' : 'high');
+const LOW = QUALITY === 'low';
+import { createGrass } from './render/grass.js';
 import { createDino } from './render/dino.js';
 import { createPterosaur } from './render/pterosaur.js';
 import { createAudio } from './audio.js';
@@ -67,8 +78,9 @@ const prev = {
 };
 prev.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 prev.renderer.setSize(340, 210, false);
-prev.scene.add(new THREE.HemisphereLight(0xffffff, 0x445533, 1.3));
-const prevSun = new THREE.DirectionalLight(0xfff4e0, 1.1); prevSun.position.set(4, 8, 5); prev.scene.add(prevSun);
+prev.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+prev.scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x4a4430, 1.1));
+const prevSun = new THREE.DirectionalLight(0xfff0dc, 2.6); prevSun.position.set(4, 8, 5); prev.scene.add(prevSun);
 function rebuildPreview() {
   if (prev.creature) { prev.scene.remove(prev.creature.group); prev.creature.dispose(); }
   prev.creature = createCreature(sel.value, colorsToSend());
@@ -107,17 +119,26 @@ for (const [k, label, color] of [['hp', 'Máu', '#d33'], ['hunger', 'Đói', '#d
 }
 const info = document.createElement('div');
 info.style.cssText = 'margin-top:6px;opacity:.85;line-height:1.35';
-info.innerHTML = 'WASD đi • Shift chạy • <b>Giữ chuột trái / F</b>: cắn (cạnh xác thì ăn xác) • <b>Giữ E</b>: uống (mặt hướng ra nước) / ăn xác / gặm cây • C ngủ • <b>R</b> gầm • <b>G</b> ngậm/kéo xác đi • <b>M</b> tắt/bật âm thanh<br><b>Loài bay (Pteranodon): giữ Space cất cánh / bay lên, Ctrl hạ xuống, nhả phím thì lướt chìm dần</b><br>Cuộn chuột zoom • click để khoá chuột';
+info.innerHTML = 'WASD đi • Shift chạy • <b>Giữ chuột trái / F</b>: cắn (cạnh xác thì ăn xác) • <b>Giữ E</b>: uống (mặt hướng ra nước) / ăn xác / gặm cây • C ngủ • <b>R</b> gầm • <b>G</b> ngậm/kéo xác đi • <b>M</b> tắt/bật âm thanh • <b>J</b> bảng nhiệm vụ<br><b>Loài bay (Pteranodon): giữ Space cất cánh / bay lên, Ctrl hạ xuống, nhả phím thì lướt chìm dần</b><br>Cuộn chuột zoom • click để khoá chuột • <b>F11</b> toàn màn hình (chặn Ctrl+W đóng trang)';
 hud.appendChild(info);
 document.body.appendChild(hud);
+if (TOUCH) {
+  // Điện thoại: thanh chỉ số gọn ở góc trên trái (góc dưới dành cho cần điều khiển), ẩn hướng dẫn bàn phím
+  hud.style.cssText += ';top:max(8px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));bottom:auto;width:170px;font-size:11px;pointer-events:none';
+  info.style.display = 'none';
+}
 // Chỉ báo độ cao (chỉ hiện khi đang bay)
 const altBox = document.createElement('div');
 altBox.style.cssText = 'position:fixed;right:18px;bottom:18px;padding:6px 12px;background:#0007;color:#fff;font:14px sans-serif;border-radius:8px;z-index:5;display:none';
 document.body.appendChild(altBox);
+if (TOUCH) altBox.style.cssText += ';bottom:auto;top:62px;right:10px';
+// Bảng nhiệm vụ riêng của từng loài (tiến độ do server tính)
+const questPanel = createQuestPanel({ touch: TOUCH });
 // Chỉ báo trạng thái: đang tha xác, ngộ độc
 const stateBox = document.createElement('div');
 stateBox.style.cssText = 'position:fixed;right:18px;bottom:60px;padding:6px 12px;background:#0007;color:#fff;font:14px sans-serif;border-radius:8px;z-index:5;display:none;text-align:right;line-height:1.5';
 document.body.appendChild(stateBox);
+if (TOUCH) stateBox.style.cssText += ';bottom:auto;top:104px;right:10px';
 const setBar = (k, v) => {
   const b = bars[k];
   v = Math.max(0, Math.min(1, v));
@@ -147,19 +168,28 @@ function showToast(msg) {
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 // ?px=0.3: giảm độ phân giải vẽ (dùng khi kiểm thử bằng trình duyệt headless chạy phần mềm, quá chậm ở độ phân giải đầy đủ)
-renderer.setPixelRatio(+new URLSearchParams(location.search).get('px') || Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(+new URLSearchParams(location.search).get('px') || Math.min(devicePixelRatio, LOW ? 1.25 : 2)); // máy yếu: ít điểm ảnh hơn
+// Ánh sáng/màu kiểu điện ảnh: tone mapping ACES nén vùng sáng mạnh, bóng đổ mềm
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // ACES: tương phản kiểu phim, vùng sáng không bị cháy
+renderer.toneMappingExposure = 0.8;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = LOW ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-scene.add(new THREE.HemisphereLight(0xffffff, 0x445533, 1.2));
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 2000);
 addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  grade.setSize(innerWidth, innerHeight);
 });
-createTerrain(scene);
-createBridge(scene);
+setMaxAnisotropy(LOW ? 4 : renderer.capabilities.getMaxAnisotropy()); // lọc ảnh chất liệu khi nhìn xiên
+const terrain = createTerrain(scene, { detail: !LOW });
+const bridge = createBridge(scene);
 const flora = createFlora(scene);
-createSky(scene);
+const fx = createFx(scene); // bụi tung khi dậm chân
+const sky = createSky(scene, renderer, { shadowRes: LOW ? 1024 : 2048 });
+const grade = createGrade(renderer, scene, camera, { samples: LOW ? 0 : 4, grain: !LOW }); // hậu kỳ màu + tone mapping
+const grass = new URLSearchParams(location.search).get('grass') === '0' ? null : createGrass(scene, terrain.field, { radius: LOW ? 20 : 34 }); // ?grass=0 tắt thảm cỏ (máy yếu)
 
 // ---- Âm thanh (tổng hợp bằng Web Audio, không dùng file) ----
 const audio = createAudio();
@@ -168,7 +198,7 @@ addEventListener('pointerdown', wakeAudio);
 addEventListener('keydown', wakeAudio);
 
 // Loại âm kêu đau/chết theo con vật
-const VOICE_KIND = { chicken: 'chicken', rabbit: 'rabbit', mouse: 'mouse', bird: 'bird', dino: 'dino' };
+const VOICE_KIND = { chicken: 'chicken', rabbit: 'rabbit', mouse: 'mouse', bird: 'bird', lizard: 'lizard', turtle: 'turtle', boar: 'boar', dino: 'dino' };
 const roarKind = (species) => (SPECIES[species]?.flight ? 'pterosaur' : SPECIES[species]?.diet === 'herbivore' ? 'herbivore' : 'carnivore');
 
 /** Xử lý sự kiện một lần từ server (snapshot.ev): gầm, cắn, chết, hạ cánh... */
@@ -181,6 +211,7 @@ function handleEvent(e) {
     case 'npc_hurt': audio.play('hurt', { ...at, kind: VOICE_KIND[e.victim] || 'dino' }); break;
     case 'npc_die': audio.play('die', { ...at, kind: VOICE_KIND[e.victim] || 'dino', size: 0.3 }); break;
     case 'player_hurt': audio.play('hurt', { ...at, kind: 'dino', size: SPECIES[e.species]?.bodyLength || 3 }); break;
+    case 'player_die': audio.play('die', { ...at, kind: 'dino', size: e.size || SPECIES[e.species]?.bodyLength || 3 }); break;
     case 'land': audio.play('thud', { ...at, size: e.size || 2 }); break;
     case 'takeoff': audio.play('wing_whoosh', { ...at, size: e.size || 2 }); break;
     default: break;
@@ -198,6 +229,7 @@ function surfaceAt(x, z) {
 }
 
 // ---- Trạng thái ----
+let camShake = 0; // biên độ rung camera hiện tại (m)
 let ws, myId = null, yaw = 0, pitch = 0.22, seq = 0, zoomMul = 1;
 const keys = {};
 const ents = new Map();     // khủng long (người chơi)
@@ -213,7 +245,7 @@ function addEntity(p) {
     dino, species: p.species,
     pos: new THREE.Vector3(p.x, p.y, p.z), yawNow: p.yaw, scaleNow: STAGE_SCALE[p.stage] || 0.25,
     speed01: 0, tilt: new THREE.Quaternion(), roll: 0, pitch: 0, altNow: p.alt || 0, t: p,
-    stepAcc: 0, flapT: 0, feedT: 0,
+    stepAcc: 0, flapT: 0, feedT: 0, lod: lodState(dino.group),
   };
   ents.set(p.id, e);
   return e;
@@ -229,7 +261,7 @@ function removeEntity(id) {
 function addNpc(n) {
   const animal = createAnimal(n.kind);
   scene.add(animal.group);
-  const e = { animal, kind: n.kind, pos: new THREE.Vector3(n.x, n.y, n.z), yawNow: n.yaw, speed01: 0, t: n };
+  const e = { animal, kind: n.kind, pos: new THREE.Vector3(n.x, n.y, n.z), yawNow: n.yaw, speed01: 0, t: n, lod: lodState(animal.group) };
   npcEnts.set(n.id, e);
   return e;
 }
@@ -269,6 +301,27 @@ function removeCarcass(id) {
   carcEnts.delete(id);
 }
 
+// ---- LOD theo khoảng cách tới camera: ẩn con ở xa, tắt bóng đổ con hơi xa, hoạt hoạ thưa dần ----
+// (mỗi khủng long là SkinnedMesh + ~20 khối phụ: vẽ, tính xương và đổ bóng cho cả trăm con ở xa rất tốn GPU/CPU)
+function lodState(group) {
+  const meshes = [];
+  group.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  return { meshes, shadow: true, acc: 0 };
+}
+/** Cập nhật hiển thị; trả true nếu khung này cần chạy hoạt hoạ (khi đó dùng lod.acc làm dt rồi nó tự về 0). */
+function lodStep(lod, group, pos, dt, visDist, shadowDist) {
+  const d = camera.position.distanceTo(pos);
+  group.visible = d < visDist;
+  const sh = d < shadowDist;
+  if (sh !== lod.shadow) { lod.shadow = sh; for (const m of lod.meshes) m.castShadow = sh; }
+  if (lod.ran) lod.acc = 0;
+  lod.acc += dt;
+  if (!group.visible) { lod.ran = false; lod.acc = Math.min(lod.acc, 0.1); return false; }
+  const every = d < 50 ? 0 : d < 120 ? 1 / 24 : 1 / 12; // gần: mỗi khung; xa: 24 hoặc 12 lần/giây
+  lod.ran = lod.acc >= every;
+  return lod.ran;
+}
+
 function applySnapshot(m) {
   const seen = new Set();
   for (const p of m.players) {
@@ -304,6 +357,7 @@ function applySnapshot(m) {
     const tags = [];
     if (m.you.carrying) tags.push('🍖 Đang tha xác (G để thả)');
     if (m.you.poisoned) tags.push('<span style="color:#9f6">☠ Ngộ độc thịt thối</span>');
+    if (m.you.q) questPanel.update(m.you.q);
     stateBox.innerHTML = tags.join('<br>');
     stateBox.style.display = tags.length ? 'block' : 'none';
   }
@@ -311,6 +365,8 @@ function applySnapshot(m) {
 
 function showMenu(msg) {
   hud.style.display = 'none';
+  questPanel.show(false);
+  touch?.show(false);
   menu.classList.remove('hidden');
   let note = document.getElementById('note');
   if (!note) { note = document.createElement('div'); note.id = 'note'; menu.prepend(note); }
@@ -318,21 +374,37 @@ function showMenu(msg) {
   if (document.pointerLockElement) document.exitPointerLock();
 }
 
+/**
+ * Địa chỉ server game. Mặc định đi qua proxy /ws của Vite (cùng cổng với trang web) nên máy khác/điện thoại
+ * chỉ cần mở 1 cổng, và chạy được qua HTTPS (tunnel). ?server=host:port để nối thẳng tới server game.
+ */
+function serverUrl() {
+  const override = new URLSearchParams(location.search).get('server');
+  if (override) return override.includes('://') ? override : `ws://${override}`;
+  if (import.meta.env.DEV || import.meta.env.VITE_WS_PROXY) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  return `ws://${location.hostname}:${SERVER_PORT}`;
+}
+
 document.getElementById('play').onclick = () => {
   audio.resume(); audio.play('ui_click');
+  if (TOUCH) requestFull(); // điện thoại: toàn màn hình + xoay ngang (nếu trình duyệt cho phép)
   if (ws) ws.close();
   for (const id of [...ents.keys()]) removeEntity(id);
   for (const id of [...npcEnts.keys()]) removeNpc(id);
   for (const id of [...carcEnts.keys()]) removeCarcass(id);
   myId = null;
-  ws = new WebSocket(`ws://${location.hostname}:${SERVER_PORT}`);
+  ws = new WebSocket(serverUrl());
   store.set('isle.name', nameInput.value);
   ws.onopen = () => ws.send(encode({ t: C2S.JOIN, name: nameInput.value || 'dino', species: sel.value, colors: colorsToSend() }));
   ws.onclose = () => { if (myId != null) { myId = null; showMenu('Mất kết nối server'); } };
   ws.onmessage = (e) => {
     const m = decode(e.data);
     if (!m) return;
-    if (m.t === S2C.WELCOME) { myId = m.id; menu.classList.add('hidden'); hud.style.display = 'block'; }
+    if (m.t === S2C.WELCOME) {
+      myId = m.id; menu.classList.add('hidden'); hud.style.display = 'block';
+      touch?.setFlyer(!!SPECIES[sel.value]?.flight); touch?.show(true);
+      questPanel.setSpecies(sel.value, SPECIES[sel.value].name); questPanel.show(true);
+    }
     else if (m.t === S2C.SNAPSHOT) { applySnapshot(m); for (const ev of m.ev || []) handleEvent(ev); }
     else if (m.t === S2C.DEAD) {
       myId = null;
@@ -345,8 +417,12 @@ document.getElementById('play').onclick = () => {
 // ---- Input ----
 const send = (o) => { if (ws && ws.readyState === 1 && myId != null) ws.send(encode(o)); };
 let sleeping = false;
+const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyC', 'KeyR', 'KeyG', 'KeyM', 'KeyJ', 'KeyX', 'Space', 'ShiftLeft', 'ShiftRight']);
 addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault(); // không cuộn trang khi bay lên
+  // Đang chơi: Ctrl (hạ độ cao khi bay) + phím game không được kích hoạt phím tắt trình duyệt
+  // (Ctrl+D đánh dấu trang, Ctrl+S lưu trang, Ctrl+A chọn hết, Ctrl+F tìm, Ctrl+R tải lại, Ctrl+E/G...)
+  if ((e.ctrlKey || e.metaKey) && menu.classList.contains('hidden') && GAME_KEYS.has(e.code)) e.preventDefault();
   keys[e.code] = true;
   if (e.repeat) return;
   if (e.code === 'KeyE') send({ t: C2S.INTERACT });
@@ -354,6 +430,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') { sleeping = !sleeping; send({ t: C2S.SLEEP, on: sleeping }); }
   if (e.code === 'KeyR') send({ t: C2S.ROAR });
   if (e.code === 'KeyG') send({ t: C2S.GRAB });
+  if (e.code === 'KeyJ') questPanel.toggle();
   if (e.code === 'KeyM') showToast(audio.toggleMute() ? 'Đã tắt âm thanh (M để bật)' : 'Đã bật âm thanh');
 });
 addEventListener('keyup', (e) => (keys[e.code] = false));
@@ -366,21 +443,57 @@ let mouseHeld = false;
 addEventListener('mousedown', (e) => { if (e.button === 0 && document.pointerLockElement) { mouseHeld = true; send({ t: C2S.ATTACK }); } });
 addEventListener('mouseup', (e) => { if (e.button === 0) mouseHeld = false; });
 addEventListener('wheel', (e) => { zoomMul = Math.max(0.5, Math.min(2.5, zoomMul * (e.deltaY > 0 ? 1.1 : 1 / 1.1))); }, { passive: true });
-renderer.domElement.addEventListener('click', () => { if (!document.pointerLockElement) renderer.domElement.requestPointerLock(); });
+renderer.domElement.addEventListener('click', () => { if (!TOUCH && !document.pointerLockElement) renderer.domElement.requestPointerLock(); });
 
-// Giữ E để ăn/uống liên tục (mỗi ngụm/miếng cắn có hồi chiêu ở server)
+// ---- Chống đóng trang nhầm khi đang chơi (Ctrl là phím hạ độ cao, rất dễ bấm cùng W) ----
+// Trình duyệt KHÔNG cho trang chặn Ctrl+W ở chế độ thường; ta làm 2 lớp:
+//  1) Đang chơi mà bấm Ctrl+W / đóng tab -> trình duyệt hỏi "Rời khỏi trang?" thay vì đóng ngay.
+//  2) Ở chế độ toàn màn hình (F11) -> Keyboard Lock giữ các phím game, Ctrl+W bị chặn hẳn (Chrome/Edge).
+const inGame = () => menu.classList.contains('hidden') && myId != null;
+addEventListener('beforeunload', (e) => { if (inGame()) { e.preventDefault(); e.returnValue = ''; } });
+addEventListener('keydown', (e) => {
+  if (e.code !== 'F11' || !inGame() || !document.documentElement.requestFullscreen) return;
+  e.preventDefault(); // F11 -> toàn màn hình qua Fullscreen API (cần để Keyboard Lock có hiệu lực)
+  if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
+});
+document.addEventListener('fullscreenchange', () => {
+  const kb = navigator.keyboard;
+  if (!kb?.lock) return;
+  if (document.fullscreenElement) kb.lock([...GAME_KEYS, 'ControlLeft', 'ControlRight']).catch(() => {});
+  else kb.unlock();
+});
+
+// ---- Cảm ứng (điện thoại): cần điều khiển ảo, vuốt xoay camera, chụm zoom, nút hành động ----
+const touch = TOUCH ? createTouchControls({
+  onLook(dx, dy) { yaw -= dx * 0.0065; pitch = Math.max(-0.15, Math.min(1.1, pitch + dy * 0.005)); },
+  onZoom(f) { zoomMul = Math.max(0.5, Math.min(2.5, zoomMul * f)); },
+  onAction(id, down) {
+    if (!down) return;
+    if (id === 'attack') send({ t: C2S.ATTACK });
+    else if (id === 'interact') send({ t: C2S.INTERACT });
+    else if (id === 'roar') send({ t: C2S.ROAR });
+    else if (id === 'grab') send({ t: C2S.GRAB });
+    else if (id === 'sleep') { sleeping = !sleeping; send({ t: C2S.SLEEP, on: sleeping }); }
+    else if (id === 'quests') questPanel.toggle();
+    else if (id === 'mute') { const m = audio.toggleMute(); showToast(m ? 'Đã tắt âm thanh' : 'Đã bật âm thanh'); return m; }
+  },
+}) : null;
+const th = (id) => !!touch?.state.held[id];
+
+// Giữ E (hoặc nút Ăn/Uống) để ăn/uống liên tục (mỗi ngụm/miếng cắn có hồi chiêu ở server)
 setInterval(() => {
-  if (keys.KeyE) send({ t: C2S.INTERACT });
-  if (keys.KeyF || mouseHeld) send({ t: C2S.ATTACK }); // giữ chuột/F để cắn liên tục (cũng là ăn khi đứng cạnh xác)
+  if (keys.KeyE || th('interact')) send({ t: C2S.INTERACT });
+  if (keys.KeyF || mouseHeld || th('attack')) send({ t: C2S.ATTACK }); // giữ để cắn liên tục (cũng là ăn khi đứng cạnh xác)
 }, 250);
 
 setInterval(() => {
   send({
     t: C2S.INPUT, seq: ++seq, yaw,
-    mx: (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
-    mz: (keys.KeyW ? -1 : 0) + (keys.KeyS ? 1 : 0),
-    sprint: !!keys.ShiftLeft,
-    up: (keys.Space ? 1 : 0) - (keys.ControlLeft || keys.KeyX ? 1 : 0), // loài bay: Space bay lên/cất cánh, Ctrl (hoặc X) hạ xuống
+    mx: Math.max(-1, Math.min(1, (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + (touch?.state.mx || 0))),
+    mz: Math.max(-1, Math.min(1, (keys.KeyW ? -1 : 0) + (keys.KeyS ? 1 : 0) + (touch?.state.mz || 0))),
+    sprint: !!keys.ShiftLeft || !!touch?.state.sprint,
+    // loài bay: Space (nút Bay lên) bay lên/cất cánh, Ctrl hoặc X (nút Hạ) hạ xuống
+    up: Math.max(-1, Math.min(1, (keys.Space || th('up') ? 1 : 0) - (keys.ControlLeft || keys.KeyX || th('down') ? 1 : 0))),
   });
 }, 50);
 
@@ -411,13 +524,40 @@ const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const angleLerp = (a, b, t) => a + wrap(b - a) * t;
 
 /** Âm thanh suy ra từ chuyển động/trạng thái hiển thị: bước chân, vỗ cánh, nhai, uống. */
+/** Âm thanh theo sự kiện của mô hình (bàn chân chạm đất, đớp, nhai, nuốt...) — đúng khoảnh khắc động tác. */
+function creatureEvents(e, flying) {
+  const ev = e.dino.events;
+  if (!ev || !ev.length) return;
+  const sp = SPECIES[e.species], size = sp.bodyLength * e.scaleNow;
+  const at = { x: e.pos.x, y: e.pos.y + 0.3, z: e.pos.z };
+  for (const ev0 of ev) {
+    const k = typeof ev0 === 'string' ? ev0 : ev0.kind;
+    if ((k === 'step' || k === 'step_front') && !flying) {
+      const surface = surfaceAt(e.pos.x, e.pos.z);
+      audio.play('step', { ...at, size, intensity: Math.min(1, 0.35 + e.speed01) * (k === 'step_front' ? 0.75 : 1), surface });
+      // Con to: bụi tung ở bàn chân + rung camera (mạnh khi ở gần, con càng nặng càng rung)
+      if (size > 2.2 && ev0.x !== undefined) {
+        fx.dust(ev0.x, groundAt(ev0.x, ev0.z), ev0.z, size, surface, 0.7 + (ev0.run || 0) * 0.5);
+        const d = camera.position.distanceTo(e.pos);
+        const amp = Math.pow(size / 12, 1.3) * 0.16 * Math.max(0, 1 - d / (size * 5)) * (k === 'step_front' ? 0.7 : 1) * (1 + (ev0.run || 0) * 0.6);
+        camShake = Math.max(camShake, amp);
+      }
+    } else if (k === 'chew') audio.play('chew', { ...at, size });
+    else if (k === 'crunch') audio.play('crunch', { ...at, size });
+    else if (k === 'chew_soft') audio.play('crunch', { ...at, size, intensity: 0.35 });
+    else if (k === 'gulp') audio.play('gulp', { ...at, size });
+    else if (k === 'slurp') audio.play('slurp', { ...at, size });
+  }
+}
+
 function entitySounds(e, dt, v, flying) {
   const sp = SPECIES[e.species];
   const size = sp.bodyLength * e.scaleNow;
   const at = { x: e.pos.x, y: e.pos.y + 0.3, z: e.pos.z };
   const anim = e.t.anim;
+  const timed = !!e.dino.events; // mô hình tự báo khoảnh khắc bước/nhai (khủng long đi bộ) -> không phát theo quãng đường
   // Bước chân: cứ đi được một sải thì một tiếng (con to sải dài, tiếng trầm nặng)
-  if (!flying && v > 0.6) {
+  if (!timed && !flying && v > 0.6) {
     e.stepAcc += v * dt;
     const stride = Math.min(4.5, Math.max(0.3, size * 0.42));
     if (e.stepAcc >= stride) {
@@ -431,7 +571,7 @@ function entitySounds(e, dt, v, flying) {
     if (e.flapT <= 0) { e.flapT = 0.62 / (0.7 + e.speed01); audio.play('flap', { ...at, size }); }
   }
   // Ăn / uống
-  if (anim === 'eat' || anim === 'drink') {
+  if (!timed && (anim === 'eat' || anim === 'drink')) {
     e.feedT -= dt;
     if (e.feedT <= 0) {
       if (anim === 'drink') { e.feedT = 0.42; audio.play(Math.random() < 0.3 ? 'gulp' : 'slurp', { ...at, size }); }
@@ -457,7 +597,8 @@ function updateEntities(dt) {
     // Tốc độ thực tế để chỉnh nhịp chân / nhịp đập cánh
     const sp = SPECIES[e.species];
     const v = Math.hypot(e.pos.x - px, e.pos.z - pz) / Math.max(dt, 1e-4);
-    const vmax = (flying ? sp.flight.sprintSpeed : sp.sprintSpeed) * (0.5 + 0.5 * e.scaleNow);
+    // cùng công thức server: bay 0.6+0.4*scale; đi bộ căn bậc hai kích thước (server/game/survival.js)
+    const vmax = flying ? sp.flight.sprintSpeed * (0.6 + 0.4 * e.scaleNow) : sp.sprintSpeed * Math.sqrt(e.scaleNow);
     e.speed01 += (Math.min(1, v / vmax) - e.speed01) * damp(8, dt);
     entitySounds(e, dt, v, flying);
 
@@ -489,7 +630,14 @@ function updateEntities(dt) {
     g.position.copy(e.pos);
     g.quaternion.copy(e.tilt).multiply(qYaw).multiply(qPitch).multiply(qRoll);
     g.scale.setScalar(Math.max(0.05, e.scaleNow));
-    e.dino.update(dt, t.anim, e.speed01);
+    // Chuyển động thật cho mô hình: tốc độ (m/s, làm mượt), tốc độ quẹo, gia tốc -> bước chân khớp, không trượt
+    e.vs = (e.vs || 0) + (v - (e.vs || 0)) * damp(10, dt);
+    const accel = (e.speed01 - (e.prevSp ?? e.speed01)) / Math.max(dt, 1e-4); e.prevSp = e.speed01;
+    e.acc = (e.acc || 0) + (accel - (e.acc || 0)) * damp(6, dt);
+    if (lodStep(e.lod, g, e.pos, dt, 320, 70)) {
+      e.dino.update(e.lod.acc, t.anim, e.speed01, { speed: e.vs, turn: yawRate, accel: e.acc });
+      creatureEvents(e, flying);
+    }
   }
 
   for (const e of npcEnts.values()) {
@@ -504,7 +652,8 @@ function updateEntities(dt) {
     const g = e.animal.group;
     g.position.copy(e.pos);
     g.rotation.y = e.yawNow;
-    e.animal.update(dt, t.anim, e.speed01);
+    // con nhỏ ở xa không nhìn thấy (chuột 14 cm): chỉ vẽ trong tầm theo cỡ thân
+    if (lodStep(e.lod, g, e.pos, dt, 30 + def.bodyLength * 70, 25)) e.animal.update(e.lod.acc, t.anim, e.speed01);
   }
 }
 
@@ -544,6 +693,7 @@ function npcVoices(dt) {
   else if (e.kind === 'bird' && Math.random() < (e.t.anim === 'fly' ? 0.1 : 0.25)) audio.play('peep', at);
   else if (e.kind === 'mouse' && run && Math.random() < 0.5) audio.play('squeak', at);
   else if (e.kind === 'rabbit' && run && Math.random() < 0.6) audio.play('rabbit_thump', at);
+  else if (e.kind === 'boar' && Math.random() < (run ? 0.5 : 0.2)) audio.play('boar_grunt', at);
 }
 
 /** Môi trường quanh người nghe để điều khiển âm thanh nền (gió, sóng, rừng). */
@@ -599,8 +749,8 @@ function updateCamera(dt) {
   const br = world.bridge;
   if (br && (q.get('cam') === 'bridge' || q.get('cam') === 'bridgeside')) {
     const at = (s, lat, up) => new THREE.Vector3(br.ax + br.dx * s + br.nx * lat, br.deckY(Math.min(1, Math.max(0, s / br.len))) + up, br.az + br.dz * s + br.nz * lat);
-    if (q.get('cam') === 'bridge') { camera.position.copy(at(-16, 3, 7)); camera.lookAt(at(br.len * 0.55, 0, 0)); }
-    else { camera.position.copy(at(br.len * 0.5, 30, 9)); camera.lookAt(at(br.len * 0.5, 0, 1)); }
+    if (q.get('cam') === 'bridge') { camera.position.copy(at(-br.halfW * 1.6, br.halfW * 0.4, br.halfW * 0.6)); camera.lookAt(at(br.len * 0.55, 0, br.halfW * 0.4)); }
+    else { camera.position.copy(at(br.len * 0.5, br.halfW + br.len * 0.75, br.halfW * 0.5)); camera.lookAt(at(br.len * 0.5, 0, br.halfW * 0.6)); }
     return;
   }
   // Debug (?cam=npc): nhìn cận con mồi gần người chơi nhất, để kiểm tra hình dáng/kích thước thật
@@ -643,6 +793,14 @@ function updateCamera(dt) {
   camLook.lerp(focus, damp(me.t.fly ? 24 : 14, dt));
   camera.position.copy(camPos);
   camera.lookAt(camLook);
+  // Rung camera theo bước chân con to (tắt dần nhanh), dao động nhiều tần số cho tự nhiên
+  if (camShake > 0.001) {
+    const t = performance.now() / 1000;
+    camera.position.y += Math.sin(t * 47) * camShake * 0.6 - camShake * 0.25;
+    camera.position.x += Math.sin(t * 31 + 1.3) * camShake * 0.25;
+    camera.rotateZ(Math.sin(t * 23) * camShake * 0.03);
+    camShake *= Math.exp(-dt * 9);
+  }
 }
 
 function loop() {
@@ -655,8 +813,15 @@ function loop() {
   camera.getWorldDirection(camDir);
   audio.setListener(camera.position, Math.atan2(-camDir.x, -camDir.z));
   audio.update(dt, envCache);
-  flora.update(performance.now() / 1000, camera.position);
-  renderer.render(scene, camera);
+  const tNow = performance.now() / 1000;
+  fx.update(dt);
+  flora.update(tNow, camera.position);
+  terrain.update(tNow);
+  grass?.update(tNow, camera.position);
+  sky.update(ents.get(myId)?.pos || camLook, camera.position, dt);
+  grade.update(sky.state, tNow);
+  bridge.update(sky.state);
+  grade.render();
   requestAnimationFrame(loop);
 }
 loop();

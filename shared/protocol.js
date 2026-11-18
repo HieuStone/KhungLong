@@ -17,13 +17,14 @@ export const S2C = {
   DEAD: 'dead',       // { cause: 'starvation'|'wounds'|'killed', by?: tên kẻ giết }
   ERROR: 'error',     // { msg }
   EVENT: 'event',     // { kind, x, z, ... } sự kiện một lần để client phát âm thanh/hiệu ứng (xem server/index.js emit)
-  NOTICE: 'notice',   // { msg } thông báo ngắn hiển thị trên màn hình (vd "Không có nước phía trước")
+  NOTICE: 'notice',   // { msg, quest? } thông báo ngắn trên màn hình (vd "Không có nước phía trước"); quest = id nhiệm vụ vừa hoàn thành
 };
 
 /** PlayerState (gửi cho mọi người): { id, name, species, stage, x, y, z, yaw, hp01, anim, fly, alt, colors (null = màu mặc định) }
  *  y là độ cao tuyệt đối (gồm cả độ cao khi bay); alt = y - mặt đất; fly = đang bay
  *  anim: 'idle'|'walk'|'run'|'attack'|'eat'|'drink'|'fly'|'glide'|'sleep'|'dead'
- *  SelfState (chỉ gửi cho chính mình): { hp, maxHp, hunger, thirst, stamina, growth01, bleeding, flying, alt, carrying, poisoned } — các giá trị 0..1 trừ hp/maxHp/alt
+ *  SelfState (chỉ gửi cho chính mình): { hp, maxHp, hunger, thirst, stamina, growth01, bleeding, flying, alt, carrying, poisoned, q? } — các giá trị 0..1 trừ hp/maxHp/alt
+ *    q (chỉ gửi khi đổi): tiến độ nhiệm vụ theo thứ tự QUESTS[loài] trong shared/quests.js, mảng số nguyên
  *  CarcassState (snapshot.carcasses, chỉ xác gần): { id, type: 'npc'|'dino', kind (loại con vật hoặc id loài), stage, x, y, z, yaw, rot (độ thối 0..1), meat01 (còn bao nhiêu thịt), carried, mode: 'mouth'|'drag'|null, colors (màu của khủng long đã chết, hoặc null) }
  *  EventState (snapshot.ev, chỉ sự kiện gần người nhận): { kind: 'roar'|'bite'|'miss'|'npc_hurt'|'npc_die'|'land'|'takeoff'|'player_hurt'|'player_die', x, z, y?, species?, victim? (loại con vật), size? } */
 

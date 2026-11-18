@@ -144,9 +144,9 @@ describe('lớn dần', () => {
 });
 
 describe('stageStats', () => {
-  it('nhân theo STAGE_SCALE và speed theo 0.5+0.5*scale', () => {
+  it('nhân theo STAGE_SCALE và speed theo căn bậc hai scale', () => {
     const s = stageStats(ID, 'juvenile');
-    const f = 0.5 + 0.5 * STAGE_SCALE.juvenile;
+    const f = Math.sqrt(STAGE_SCALE.juvenile);
     expect(s.scale).toBe(STAGE_SCALE.juvenile);
     expect(s.maxHp).toBeCloseTo(sp.health * STAGE_SCALE.juvenile);
     expect(s.speed).toBeCloseTo(sp.speed * f);

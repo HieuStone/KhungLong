@@ -42,7 +42,11 @@ function pickSample(name, kind, size) {
   if (!arr || !arr.length) return null;
   let cand = arr;
   if (size != null) { const f = arr.filter((e) => size >= e.minSize && size <= e.maxSize); if (f.length) cand = f; }
-  return cand[Math.floor(Math.random() * cand.length)].buf;
+  // tránh phát lại đúng mẫu vừa phát (nghe đỡ lặp)
+  if (cand.length > 1) { const f = cand.filter((e) => e !== arr.last); if (f.length) cand = f; }
+  const pick = cand[Math.floor(Math.random() * cand.length)];
+  arr.last = pick;
+  return pick.buf;
 }
 /** Cắt đoạn [start, end] giây của một AudioBuffer (bản sao), có vuốt 10 ms hai đầu để không bị "click". */
 function sliceBuffer(ctx, srcBuf, start, end) {
@@ -276,6 +280,14 @@ const SND = {
     } else if (kind === 'mouse') {
       v.tone({ f0: 3200, f1: 2400, dur: 0.1, peak: 0.25, a: 0.004 });
       v.tone({ f0: 3600, f1: 2700, t: v.t0 + 0.09, dur: 0.1, peak: 0.2, a: 0.004 });
+    } else if (kind === 'boar') {
+      // lợn rừng kêu ré: răng cưa cao trượt xuống, rung mạnh, lọc thông dải
+      v.tone({ type: 'sawtooth', f0: r(950, 1150), f1: 520, dur: 0.45, peak: 0.3, a: 0.02, vib: { rate: 18, depth: 70 }, filt: { type: 'bandpass', f: 1300, q: 1.2 } });
+      v.noise({ type: 'bandpass', f0: 1800, q: 1.5, dur: 0.35, peak: 0.1, a: 0.02 });
+    } else if (kind === 'lizard' || kind === 'turtle') {
+      // bò sát: tiếng xì hơi (rùa trầm hơn)
+      const lo = kind === 'turtle';
+      v.noise({ type: 'highpass', f0: lo ? 1500 : 3500, f1: lo ? 900 : 2500, q: 0.7, dur: lo ? 0.5 : 0.25, peak: lo ? 0.22 : 0.18, a: 0.02 });
     } else { // bird
       v.tone({ f0: 3600, f1: 2200, dur: 0.18, peak: 0.25, a: 0.005, vib: { rate: 40, depth: 150 } });
     }
@@ -312,6 +324,15 @@ const SND = {
   },
   squeak(v) {
     for (let i = 0; i < 2; i++) { const f = r(3200, 4000); v.tone({ f0: f, f1: f * 1.3, t: v.t0 + i * 0.11, dur: 0.09, peak: 0.2, a: 0.004 }); }
+  },
+  // lợn rừng ủn ỉn: 2-3 tiếng ngắn trầm, có rền
+  boar_grunt(v) {
+    const n = 2 + Math.floor(r(0, 2));
+    for (let i = 0; i < n; i++) {
+      const f = r(95, 130), t = v.t0 + i * r(0.16, 0.24);
+      v.tone({ type: 'sawtooth', t, f0: f, f1: f * 0.8, dur: 0.12, peak: 0.28, a: 0.01, filt: { type: 'lowpass', f: 700 } });
+      v.noise({ type: 'bandpass', t, f0: 450, q: 1.2, dur: 0.1, peak: 0.08, a: 0.01 });
+    }
   },
   peep(v) {
     for (let i = 0; i < 2; i++) { const f = r(3000, 3800); v.tone({ f0: f, f1: f * 0.8, t: v.t0 + i * 0.15, dur: 0.1, peak: 0.2, a: 0.006, vib: { rate: 30, depth: 60 } }); }
@@ -358,13 +379,41 @@ SND.eat_done = SND.level_up;
 /** Phát mẫu thật: gầm thì hạ cao độ theo cỡ thân (con to trầm hơn) và trộn thêm tiếng trầm cho nặng. */
 function playSample(v, buf, name, o) {
   const size = clamp(o.size ?? 3, 0.3, 15), I = clamp(o.intensity ?? 1, 0.2, 1.5);
-  let rate = name === 'roar' ? clamp(Math.pow(6 / size, 0.25), 0.7, 1.6) : 1;
-  rate *= r(0.96, 1.04);
+  const voice = name === 'roar' || ((name === 'hurt' || name === 'die') && (o.kind || 'dino') === 'dino');
+  let rate = name === 'roar' ? clamp(Math.pow(6 / size, 0.25), 0.7, 1.6) : voice ? clamp(Math.pow(6 / size, 0.18), 0.8, 1.35) : 1;
+  rate *= r(0.95, 1.05);
   v.sample(buf, { rate, peak: 0.9 * I });
-  if (name === 'roar' && size > 4 && o.kind !== 'pterosaur') {
-    const f = clamp(90 / Math.pow(size / 6, 0.6), 38, 110);
-    v.tone({ f0: f, f1: f * 0.7, dur: Math.min(1.4, buf.duration / rate), peak: 0.26 * clamp(size / 8, 0.3, 1) * I, a: 0.05 });
+  // mẫu thật đã đủ trầm; chỉ con rất to mới thêm một lớp rung nhẹ cho nặng
+  if (name === 'roar' && size > 7 && o.kind !== 'pterosaur') {
+    const f = clamp(80 / Math.pow(size / 6, 0.6), 36, 90);
+    v.tone({ f0: f, f1: f * 0.7, dur: Math.min(1.4, buf.duration / rate), peak: 0.14 * clamp(size / 10, 0.3, 1) * I, a: 0.08 });
   }
+}
+
+/**
+ * Bước chân bằng mẫu thật, chồng 3 lớp:
+ *  - bề mặt (step:<grass|sand|rock|water|wood>): luôn có; con to thì hạ cao độ cho nặng hơn
+ *  - "thịch" (stomp:thud): từ ~1.8 m, càng to càng trầm và to
+ *  - rung đất (stomp:sub): từ ~5 m, tiếng siêu trầm như ghi bằng cảm biến rung
+ * Không có mẫu bề mặt thì trả false để dùng âm tổng hợp.
+ */
+function playStepSamples(v, o) {
+  const size = clamp(o.size ?? 1, 0.3, 15), I = clamp(o.intensity ?? 1, 0, 1.5);
+  const surf = o.surface || 'grass';
+  const top = pickSample('step', surf, size);
+  if (!top) return false;
+  const amp = 0.35 + 0.55 * I;
+  const big = clamp((size - 1.5) / 6, 0, 1); // 0 = con nhỏ, 1 = T-rex
+  v.sample(top, { rate: clamp(Math.pow(2 / size, 0.22), 0.62, 1.25) * r(0.93, 1.07), peak: (0.45 + 0.3 * big) * amp, a: 0.002, fadeOut: 0.05 });
+  if (size >= 1.8) {
+    const thud = pickSample('stomp', 'thud', size);
+    if (thud) v.sample(thud, { rate: clamp(Math.pow(5 / size, 0.3), 0.65, 1.35) * r(0.94, 1.06), peak: 0.85 * clamp(big, 0.2, 1) * amp * (surf === 'water' ? 0.5 : 1), a: 0.002, fadeOut: 0.08 });
+  }
+  if (size >= 5) {
+    const sub = pickSample('stomp', 'sub', size);
+    if (sub) v.sample(sub, { rate: clamp(Math.pow(10 / size, 0.2), 0.9, 1.25), peak: clamp((size - 4) / 7, 0.2, 1) * amp, a: 0.003, fadeOut: 0.2 });
+  }
+  return true;
 }
 
 export const SOUND_NAMES = Object.keys(SND);
@@ -399,30 +448,34 @@ export function createAudio(opts = {}) {
       const res = await fetch(new URL('manifest.json', base));
       if (!res.ok) return;
       const man = await res.json();
-      const decoded = new Map(); // mỗi file chỉ giải mã một lần dù có nhiều đoạn cắt từ nó
+      const decoded = new Map(); // file -> Promise<AudioBuffer|null>: mỗi file chỉ tải + giải mã một lần dù có nhiều đoạn cắt từ nó
+      const decode = (file) => {
+        if (!decoded.has(file)) {
+          decoded.set(file, fetch(new URL(file, base))
+            .then((r2) => (r2.ok ? r2.arrayBuffer() : null))
+            .then((ab) => (ab ? ctx.decodeAudioData(ab) : null)));
+        }
+        return decoded.get(file);
+      };
+      const jobs = [];
       for (const [name, kinds] of Object.entries(man)) {
         if (name.startsWith('_') || typeof kinds !== 'object') continue;
         for (const [kind, files] of Object.entries(kinds)) {
           for (const item of Array.isArray(files) ? files : []) {
             // item: "file.ogg" hoặc { file, start, end, minSize, maxSize, gain } (start/end tính bằng giây; min/maxSize theo mét)
             const e = typeof item === 'string' ? { file: item } : item;
-            try {
-              let full = decoded.get(e.file);
-              if (!full) {
-                const r2 = await fetch(new URL(e.file, base));
-                if (!r2.ok) continue;
-                full = await ctx.decodeAudioData(await r2.arrayBuffer());
-                decoded.set(e.file, full);
-              }
+            jobs.push(decode(e.file).then((full) => {
+              if (!full) return;
               const cut = e.start != null || e.end != null;
               const buf = normalizeBuffer(cut ? sliceBuffer(ctx, full, e.start ?? 0, e.end ?? full.duration) : full, e.gain ?? 0.85);
               const key = `${name}:${kind}`;
               if (!SAMPLES.has(key)) SAMPLES.set(key, []);
               SAMPLES.get(key).push({ buf, minSize: e.minSize ?? 0, maxSize: e.maxSize ?? Infinity });
-            } catch (err) { console.warn('Không nạp được âm thanh', e.file, err.message || err); }
+            }).catch((err) => console.warn('Không nạp được âm thanh', e.file, err.message || err)));
           }
         }
       }
+      await Promise.all(jobs);
       if (SAMPLES.size) console.info('[audio] đã nạp mẫu âm thanh thật:', [...SAMPLES.entries()].map(([k, v]) => `${k} x${v.length}`).join(', '));
     } catch { /* không có manifest thì dùng âm tổng hợp */ }
   }
@@ -469,8 +522,10 @@ export function createAudio(opts = {}) {
       const rec = { prio: gain, done: false, v: null };
       rec.v = makeVoice(ctx, out, t0, () => { rec.done = true; try { out.disconnect(); lp.disconnect(); pn && pn.disconnect(); } catch { /* bỏ */ } });
       rec.v.bus.gain.value = gain;
-      const buf = pickSample(name, o.kind, o.size);
-      if (buf) playSample(rec.v, buf, name, o); else fn(rec.v, o);
+      if (name === 'step') { if (!playStepSamples(rec.v, o)) fn(rec.v, o); } else {
+        const buf = pickSample(name, o.kind, o.size);
+        if (buf) playSample(rec.v, buf, name, o); else fn(rec.v, o);
+      }
       voices.push(rec);
     } catch (e) {
       if (typeof console !== 'undefined') console.warn('audio.play lỗi', name, e);
